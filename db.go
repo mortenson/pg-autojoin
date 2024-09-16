@@ -9,9 +9,9 @@ import (
 const columnsWithForeignKeysQuery = `
 select col.table_name as table,
        col.column_name,
-       rel.table_name as primary_table,
-       rel.column_name as primary_column,
-			 kcu.constraint_name
+       COALESCE(rel.table_name, '') as primary_table,
+       COALESCE(rel.column_name, '') as primary_column,
+			 COALESCE(kcu.constraint_name, '')
 from information_schema.columns col
 left join (select kcu.constraint_schema, 
                   kcu.constraint_name, 
@@ -40,8 +40,8 @@ where col.table_schema = 'public';
 `
 
 type ForeignKey struct {
-	ToTable     string
-	FromColumns []string
+	ToTable          string
+	ColumnConditions [][2]string
 }
 
 type TableInfo struct {
@@ -77,14 +77,21 @@ func GetTableInfoResult(ctx context.Context, tx pgx.Tx) (map[string]*TableInfo, 
 			}
 		}
 		result[fromTableName].Columns = append(result[fromTableName].Columns, fromColumnName)
-		_, fkeyExists := result[fromTableName].ForeignKeys[constaintName]
-		if !fkeyExists {
-			result[fromTableName].ForeignKeys[constaintName] = &ForeignKey{
-				ToTable:     toTableName,
-				FromColumns: []string{},
+		if constaintName != "" {
+			_, fkeyExists := result[fromTableName].ForeignKeys[constaintName]
+			if !fkeyExists {
+				result[fromTableName].ForeignKeys[constaintName] = &ForeignKey{
+					ToTable:          toTableName,
+					ColumnConditions: [][2]string{},
+				}
+			}
+			if fromColumnName != "" && toColumnName != "" {
+				result[fromTableName].ForeignKeys[constaintName].ColumnConditions = append(
+					result[fromTableName].ForeignKeys[constaintName].ColumnConditions,
+					[2]string{fromColumnName, toColumnName},
+				)
 			}
 		}
-		result[fromTableName].ForeignKeys[constaintName].FromColumns = append(result[fromTableName].ForeignKeys[constaintName].FromColumns, fromColumnName)
 	}
 	return result, nil
 }

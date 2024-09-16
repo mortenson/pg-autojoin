@@ -16,12 +16,12 @@ var (
 
 type QueryColumn struct {
 	Type  QueryColumnType
-	Value string
+	Name  string
 	Alias *string
 }
 
 type QueryTable struct {
-	Value string
+	Name  string
 	Alias *string
 }
 
