@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/dominikbraun/graph"
@@ -13,18 +15,20 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
-// func pprint(jsonStr string) {
-// 	tmp := map[string]interface{}{}
-// 	json.Unmarshal([]byte(jsonStr), &tmp)
-// 	out, _ := json.MarshalIndent(tmp, "", " ")
-// 	log.Print(string(out))
-// }
-
 func errAttr(err error) slog.Attr {
 	return slog.Any("error", err)
 }
 
 func main() {
+	verbosePtr := flag.Bool("v", false, "enable verbose output")
+	flag.Parse()
+
+	if *verbosePtr {
+		slog.SetLogLoggerLevel(slog.LevelDebug)
+	}
+
+	args := flag.Args()
+
 	// Connect to database and open transaction.
 	dburl := os.Getenv("DATABASE_URL")
 	if dburl == "" {
@@ -32,11 +36,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if len(os.Args) < 2 {
+	if len(args) == 0 {
 		slog.Error("Missing query argument")
 		os.Exit(1)
 	}
-	userQuery := os.Args[1]
+	userQuery := args[0]
 
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, dburl)
@@ -115,8 +119,7 @@ func main() {
 				continue
 			}
 			alreadySeenColumns[column.Name] = true
-			// @todo support aliased columns
-			if column.Type != pg_autojoin.QueryColumnTypeColumn {
+			if column.Type == pg_autojoin.QueryColumnTypeTableWildcard {
 				continue
 			}
 			tablesThatHaveColumn, ok := columnToTable[column.Name]
@@ -138,28 +141,56 @@ func main() {
 			}
 			shortestPath := []string{}
 			for _, otherTableName := range tablesThatHaveColumn {
-				for _, queryTables := range query.Tables {
-					path, _ := graph.ShortestPath(relationshipGraph, queryTables.Name, otherTableName)
+				breakOut := false
+				for _, queryTableName := range queryTableNames {
+					path, _ := graph.ShortestPath(relationshipGraph, queryTableName, otherTableName)
 					if len(path) == 0 {
-						path, _ = graph.ShortestPath(relationshipGraph, otherTableName, queryTables.Name)
+						path, _ = graph.ShortestPath(relationshipGraph, otherTableName, queryTableName)
+						slices.Reverse(path)
 					}
 					if len(path) == 0 {
 						continue
 					}
+					// Users can provide hints via aliases.
+					if column.Alias != nil && *column.Alias == otherTableName {
+						slog.Debug(fmt.Sprintf("Using alias to imply join for %s.%s", *column.Alias, column.Name))
+						shortestPath = path
+						breakOut = true
+						break
+					}
 					if len(shortestPath) == 0 || len(path) <= len(shortestPath) {
 						shortestPath = path
 					}
+				}
+				if breakOut {
+					break
 				}
 			}
 			if len(shortestPath) == 0 {
 				slog.Error("Cannot find shortest path", slog.Any("column", column.Name))
 				continue
 			} else {
-				slog.Debug("Shortest path for %s is %s", column.Name, strings.Join(shortestPath, ", "))
+				slog.Debug(fmt.Sprintf("Shortest path for %s is %s", column.Name, strings.Join(shortestPath, ", ")))
 				allPaths = append(allPaths, shortestPath)
+				for _, pathTableName := range shortestPath {
+					queryTableNames[pathTableName] = pathTableName
+				}
 			}
 		}
-		// @todo Try to consolidate paths, possibly using another graph.
+
+		tableToAlias := map[string]string{}
+		for _, table := range query.Tables {
+			if table.Alias != nil {
+				tableToAlias[table.Name] = *table.Alias
+			}
+		}
+		alias := func(tableName string) string {
+			aliasName, ok := tableToAlias[tableName]
+			if ok {
+				return aliasName
+			}
+			return tableName
+		}
 		numJoins := 0
 		for _, path := range allPaths {
 			lastTable := ""
@@ -170,30 +201,33 @@ func main() {
 				}
 				// Add a join.
 				// It's much easier to construct a AST from a string than constructing one ourselves.
+				var fromTable string
 				var matchingFkey *pg_autojoin.ForeignKey
 				for _, fkey := range tableInfo[lastTable].ForeignKeys {
 					if fkey.ToTable == tableName {
 						matchingFkey = fkey
+						fromTable = lastTable
 						break
 					}
 				}
 				if matchingFkey == nil {
+					for _, fkey := range tableInfo[tableName].ForeignKeys {
+						if fkey.ToTable == lastTable {
+							matchingFkey = fkey
+							fromTable = tableName
+							break
+						}
+					}
+				}
+				if matchingFkey == nil {
 					slog.Error("Could not find matching foreign key", slog.Any("fromTable", lastTable), slog.Any("toTable", tableName))
-					// @todo handle error
 					break
 				}
 
-				// @todo this block seems fucked up
-				otherTable := lastTable
-				_, queryHasTable := queryTableNames[lastTable]
-				if queryHasTable {
-					otherTable = matchingFkey.ToTable
-				}
-
-				joinQuery := "select placeholder FROM foo JOIN " + otherTable + " ON "
+				joinQuery := "select placeholder FROM foo LEFT JOIN " + alias(tableName) + " ON "
 				conditions := []string{}
 				for _, fromToPair := range matchingFkey.ColumnConditions {
-					conditions = append(conditions, fmt.Sprintf("%s.%s = %s.%s", lastTable, fromToPair[0], matchingFkey.ToTable, fromToPair[1]))
+					conditions = append(conditions, fmt.Sprintf("%s.%s = %s.%s", alias(fromTable), fromToPair[0], alias(matchingFkey.ToTable), fromToPair[1]))
 				}
 				joinQuery += strings.Join(conditions, " AND ")
 				joinParsed, _ := pg_query.Parse(joinQuery)
