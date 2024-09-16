@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"strings"
@@ -15,12 +13,12 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
-func pprint(jsonStr string) {
-	tmp := map[string]interface{}{}
-	json.Unmarshal([]byte(jsonStr), &tmp)
-	out, _ := json.MarshalIndent(tmp, "", " ")
-	log.Print(string(out))
-}
+// func pprint(jsonStr string) {
+// 	tmp := map[string]interface{}{}
+// 	json.Unmarshal([]byte(jsonStr), &tmp)
+// 	out, _ := json.MarshalIndent(tmp, "", " ")
+// 	log.Print(string(out))
+// }
 
 func errAttr(err error) slog.Attr {
 	return slog.Any("error", err)
@@ -33,6 +31,12 @@ func main() {
 		slog.Error("DATABASE_URL env variable is required")
 		os.Exit(1)
 	}
+
+	if len(os.Args) < 2 {
+		slog.Error("Missing query argument")
+		os.Exit(1)
+	}
+	userQuery := os.Args[1]
 
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, dburl)
@@ -85,9 +89,7 @@ func main() {
 	}
 
 	// Take in arbitrary query that is missing joins.
-	// query := `SELECT email, callsign FROM organization_user;`
-	query := `SELECT email, callsign FROM users;`
-	tree, err := pg_query.Parse(query)
+	tree, err := pg_query.Parse(userQuery)
 	if err != nil {
 		slog.Error("Could not parse query", errAttr(err))
 		os.Exit(1)
@@ -153,11 +155,12 @@ func main() {
 				slog.Error("Cannot find shortest path", slog.Any("column", column.Name))
 				continue
 			} else {
-				log.Printf("Shortest path for %s is %s", column.Name, strings.Join(shortestPath, ", "))
+				slog.Debug("Shortest path for %s is %s", column.Name, strings.Join(shortestPath, ", "))
 				allPaths = append(allPaths, shortestPath)
 			}
 		}
 		// @todo Try to consolidate paths, possibly using another graph.
+		numJoins := 0
 		for _, path := range allPaths {
 			lastTable := ""
 			for _, tableName := range path {
@@ -179,7 +182,15 @@ func main() {
 					// @todo handle error
 					break
 				}
-				joinQuery := "select placeholder FROM foo JOIN " + tableName + " ON "
+
+				// @todo this block seems fucked up
+				otherTable := lastTable
+				_, queryHasTable := queryTableNames[lastTable]
+				if queryHasTable {
+					otherTable = matchingFkey.ToTable
+				}
+
+				joinQuery := "select placeholder FROM foo JOIN " + otherTable + " ON "
 				conditions := []string{}
 				for _, fromToPair := range matchingFkey.ColumnConditions {
 					conditions = append(conditions, fmt.Sprintf("%s.%s = %s.%s", lastTable, fromToPair[0], matchingFkey.ToTable, fromToPair[1]))
@@ -192,9 +203,23 @@ func main() {
 				tree.Stmts[0].Stmt.GetSelectStmt().FromClause[0] = joinParsed.Stmts[0].Stmt.GetSelectStmt().FromClause[0]
 				// The next join will be from this table.
 				lastTable = tableName
+				numJoins++
 			}
 		}
 		deparse, _ := pg_query.Deparse(tree)
-		log.Print(deparse)
+		fmt.Printf("Old query:\n\t%s \n", userQuery)
+		fmt.Printf("New query (added %d joins, dank):\n\t%s \n", numJoins, deparse)
+		rows, err := tx.Query(ctx, deparse)
+		if err != nil {
+			slog.Error("Could not run generated query", errAttr(err))
+			os.Exit(1)
+		}
+		count := 0
+		for rows.Next() {
+			count++
+			// fmt.Println(rows.Values())
+		}
+		fmt.Println()
+		fmt.Printf("Query returned %d rows\n", count)
 	}
 }
