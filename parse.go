@@ -11,37 +11,45 @@ type QueryColumnType string
 var (
 	QueryColumnTypeTableWildcard QueryColumnType = "ColumnTypeTableWildcard"
 	QueryColumnTypeColumn        QueryColumnType = "ColumnTypeColumn"
+	QueryColumnTypeAliasedColumn QueryColumnType = "QueryColumnTypeAliasedColumn"
 )
 
 type QueryColumn struct {
 	Type  QueryColumnType
 	Value string
+	Alias *string
 }
 
 type QueryTable struct {
 	Value string
+	Alias *string
 }
 
 type Query struct {
 	Columns []QueryColumn
 	Tables  []QueryTable
-	Aliases map[string]QueryTable
 }
 
 func getColumnsFromRef(ref *pg_query.ColumnRef) []QueryColumn {
-	var fieldName string
+	svals := []string{}
 	isWildcard := false
 	for _, field := range ref.Fields {
 		if field.GetString_() != nil {
-			fieldName = field.GetString_().Sval
+			svals = append(svals, field.GetString_().Sval)
 		} else if field.GetAStar() != nil {
 			isWildcard = true
 		}
 	}
-	if len(ref.Fields) == 2 && isWildcard {
-		return []QueryColumn{{QueryColumnTypeTableWildcard, fieldName}}
-	} else if len(ref.Fields) == 1 && fieldName != "" {
-		return []QueryColumn{{QueryColumnTypeColumn, fieldName}}
+	if len(svals) == 1 {
+		if len(ref.Fields) == 2 && isWildcard {
+			return []QueryColumn{{QueryColumnTypeTableWildcard, svals[0], nil}}
+		} else if len(ref.Fields) == 1 {
+			return []QueryColumn{{QueryColumnTypeColumn, svals[0], nil}}
+		}
+	} else if len(svals) == 2 {
+		return []QueryColumn{{QueryColumnTypeAliasedColumn, svals[1], &svals[0]}}
+	} else {
+		// @todo log unknown column construction
 	}
 	return []QueryColumn{}
 }
@@ -72,7 +80,11 @@ func TraverseQuery(value interface{}, depth int) Query {
 	v := reflect.ValueOf(value)
 
 	if v.Type() == reflect.TypeOf(pg_query.RangeVar{}) {
-		query.Tables = append(query.Tables, QueryTable{value.(pg_query.RangeVar).Relname})
+		var alias *string
+		if value.(pg_query.RangeVar).Alias != nil {
+			alias = &value.(pg_query.RangeVar).Alias.Aliasname
+		}
+		query.Tables = append(query.Tables, QueryTable{value.(pg_query.RangeVar).Relname, alias})
 	}
 
 	if v.Type() == reflect.TypeOf(pg_query.ColumnRef{}) {
