@@ -39,11 +39,6 @@ func main() {
 		os.Exit(1)
 	}
 	userQuery := args[0]
-	parsedQuery, err := pg_query.Parse(userQuery)
-	if err != nil {
-		slog.Error("Could not parse query", errAttr(err))
-		os.Exit(1)
-	}
 
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, dburl)
@@ -73,19 +68,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	for _, stmt := range parsedQuery.GetStmts() {
-		if stmt.Stmt.GetSelectStmt() == nil {
-			slog.Error("Could not rollback transaction")
-			os.Exit(1)
-		}
-		err := pg_autojoin.AddMissingJoinsToSelect(stmt, databaseInfo)
-		if err != nil {
-			slog.Error("Could not add missing joins to select", errAttr(err))
-			os.Exit(1)
-		}
+	parsedQuery, err := pg_query.Parse(userQuery)
+	if err != nil {
+		slog.Error("Could not parse query", errAttr(err))
+		os.Exit(1)
+	}
+	err = pg_autojoin.AddMissingJoinsToQuery(parsedQuery, databaseInfo)
+	if err != nil {
+		slog.Error("Could not add missing joins to query", errAttr(err))
+		os.Exit(1)
 	}
 
-	deparse, _ := pg_query.Deparse(parsedQuery)
+	deparse, err := pg_query.Deparse(parsedQuery)
+	if err != nil {
+		slog.Error("Could not deparse query after adding joins", errAttr(err))
+		os.Exit(1)
+	}
 	fmt.Printf("Old query:\n\t%s \n", userQuery)
 	fmt.Printf("New query:\n\t%s \n", deparse)
 	rows, err := tx.Query(ctx, deparse)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 
@@ -171,5 +172,19 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 		}
 	}
 
+	return nil
+}
+
+func AddMissingJoinsToQuery(parsedQuery *pg_query.ParseResult, databaseInfo DatabaseInfo) error {
+	for _, stmt := range parsedQuery.GetStmts() {
+		if stmt.Stmt.GetSelectStmt() == nil {
+			slog.Error("Could not rollback transaction")
+			os.Exit(1)
+		}
+		err := AddMissingJoinsToSelect(stmt, databaseInfo)
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
