@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 
@@ -12,15 +11,16 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
-func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) error {
+func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) error {
 	// Parse the query.
 	query := TraverseQuery(stmt, 0)
+
+	// Set up some helpful maps for later.
 	queryTableNames := map[string]string{}
 	for _, table := range query.Tables {
 		queryTableNames[table.Name] = table.Name
 	}
 
-	// Aliases are slightly tricky, easier to just always use the alias instead of real table name.
 	tableToAlias := map[string]string{}
 	aliasToTable := map[string]string{}
 	for _, table := range query.Tables {
@@ -66,13 +66,12 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 		// For wildcards like foo.*, assume the user wants the "foo" table.
 		if column.Type == QueryColumnTypeTableWildcard {
 			tablesThatHaveColumn = []string{*aliasTableName}
-			// Otherwise, use the database info to find relevant tables.
 		} else {
 			matches, ok := databaseInfo.ColumnToTable[column.Name]
 			if !ok {
 				return fmt.Errorf("could not find table with column %s, maybe the database schema changed?", column.Name)
 			}
-			// For more consistent behavior.
+			// For more consistent behavior between runs.
 			slices.Sort(matches)
 			tablesThatHaveColumn = matches
 		}
@@ -82,6 +81,7 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 			tablesThatHaveColumn = []string{*aliasTableName}
 		}
 
+		// See if the column already exists in a table in the query, if so we can ignore.
 		columnExistsInQuery := false
 		for _, table := range tablesThatHaveColumn {
 			_, tableInQuery := queryTableNames[table]
@@ -93,6 +93,8 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 		if columnExistsInQuery {
 			continue
 		}
+
+		// We need to join. Find the shortest path from a table that has the column to a table that exists in the query.
 		shortestPath := []string{}
 		for _, otherTableName := range tablesThatHaveColumn {
 			for _, queryTableName := range queryTableNames {
@@ -116,12 +118,14 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 		} else {
 			slog.Debug(fmt.Sprintf("Shortest path for %s is %s", column, strings.Join(shortestPath, ", ")))
 			allPaths = append(allPaths, shortestPath)
+			// Update queryTableNames so that sub-paths (JOINs) are never duplicated.
 			for _, pathTableName := range shortestPath {
 				queryTableNames[pathTableName] = pathTableName
 			}
 		}
 	}
 
+	// Add joins to the parsed query.
 	for _, path := range allPaths {
 		lastTable := ""
 		for _, tableName := range path {
@@ -129,8 +133,8 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 				lastTable = tableName
 				continue
 			}
-			// Add a join.
-			// It's much easier to construct a AST from a string than constructing one ourselves.
+			// See what direction we need to join.
+			// @todo this could probably be stored in the graph, then allPaths would be vertexes not names.
 			var fromTable string
 			var matchingFkey *ForeignKey
 			for _, fkey := range databaseInfo.Tables[lastTable].ForeignKeys {
@@ -153,6 +157,8 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 				return fmt.Errorf("could not find matching foreign key for %s <=> %s", lastTable, tableName)
 			}
 
+			// It's much easier parse a dummy query into an AST than constructing an AST ourselves.
+			// If this is extremely unperformant we can construct an AST, maybe from JSON/protobuf.
 			joinQuery := "select placeholder FROM foo LEFT JOIN " + aliasTable(tableName) + " ON "
 			conditions := []string{}
 			for _, fromToPair := range matchingFkey.ColumnConditions {
@@ -175,13 +181,14 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 	return nil
 }
 
+// Attempts to add JOINs to queries that reference columns from other tables.
 func AddMissingJoinsToQuery(parsedQuery *pg_query.ParseResult, databaseInfo DatabaseInfo) error {
 	for _, stmt := range parsedQuery.GetStmts() {
+		// We can only safely do this on SELECTs.
 		if stmt.Stmt.GetSelectStmt() == nil {
-			slog.Error("Could not rollback transaction")
-			os.Exit(1)
+			continue
 		}
-		err := AddMissingJoinsToSelect(stmt, databaseInfo)
+		err := addMissingJoinsToSelect(stmt, databaseInfo)
 		if err != nil {
 			return err
 		}

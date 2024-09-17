@@ -58,6 +58,7 @@ type DatabaseInfo struct {
 	RelationshipGraph graph.Graph[string, string]
 }
 
+// Gathers information about every table's column and foreign key.
 func GetDatabaseInfoResult(ctx context.Context, conn *pgx.Conn) (DatabaseInfo, error) {
 	rows, err := conn.Query(ctx, columnsWithForeignKeysQuery)
 	if err != nil {
