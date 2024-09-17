@@ -23,86 +23,89 @@ func errAttr(err error) slog.Attr {
 	return slog.Any("error", err)
 }
 
+// Possibly stupid way to lock individual keys in a map.
+var databaseInfoCache = map[string]*pg_autojoin.DatabaseInfo{}
+var infoCacheLocks = sync.Map{}
+
+func getDatabaseInfo(ctx context.Context, dburl string) (*pg_autojoin.DatabaseInfo, error) {
+	storedLock, _ := infoCacheLocks.LoadOrStore(dburl, &sync.RWMutex{})
+	lock := storedLock.(*sync.RWMutex)
+
+	// Read existing cache.
+	lock.RLock()
+	cacheInfo, hasCacheInfo := databaseInfoCache[dburl]
+	lock.RUnlock()
+	if hasCacheInfo {
+		return cacheInfo, nil
+	}
+
+	// Insert new cache.
+	lock.Lock()
+	defer lock.Unlock()
+
+	// @todo It'd be nice to re-use existing connection we have via the proxy but seems not possible with pgx?
+	conn, err := pgx.Connect(ctx, dburl)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(ctx)
+
+	// Gather information on what columns, tables, and fkeys exists.
+	databaseInfo, err := pg_autojoin.GetDatabaseInfoResult(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	databaseInfoCache[dburl] = &databaseInfo
+	return databaseInfoCache[dburl], nil
+}
+
+// Construct a connection string based on connection parameters.
+func buildDbUrl(ctx *proxy.Ctx) string {
+	dburl := "postgres://"
+	user, hasUser := ctx.ConnInfo.StartupParameters["user"]
+	password, hasPassword := ctx.ConnInfo.StartupParameters["password"]
+	database, hasDatabase := ctx.ConnInfo.StartupParameters["database"]
+	if hasUser {
+		dburl += user
+		if hasPassword {
+			dburl += ":" + password
+		}
+		dburl += "@"
+	}
+	dburl += ctx.ConnInfo.ServerAddress.String()
+	if hasDatabase {
+		dburl += "/" + database
+	}
+	return dburl
+}
+
 func main() {
 	verbosePtr := flag.Bool("v", false, "enable verbose output")
+	listenPointer := flag.String("l", "127.0.0.1:5337", "local listen address")
+	proxyPointer := flag.String("r", "127.0.0.1:5432", "remote postgres server address")
+	help := flag.Bool("h", false, "show help")
 	flag.Parse()
+
+	if *help {
+		flag.Usage()
+		os.Exit(0)
+	}
 
 	if *verbosePtr {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:5337")
+	ln, err := net.Listen("tcp", *listenPointer)
 	if err != nil {
 		panic(err)
-	}
-	databaseInfoCache := map[string]*pg_autojoin.DatabaseInfo{}
-	infoCacheLocks := map[string]*sync.RWMutex{}
-	getDatabaseInfo := func(ctx context.Context, dburl string) *pg_autojoin.DatabaseInfo {
-		_, hasLock := infoCacheLocks[dburl]
-		if !hasLock {
-			infoCacheLocks[dburl] = &sync.RWMutex{}
-		}
-		infoCacheLocks[dburl].RLock()
-		cacheInfo, hasCacheInfo := databaseInfoCache[dburl]
-		if hasCacheInfo {
-			infoCacheLocks[dburl].RUnlock()
-			return cacheInfo
-		}
-		infoCacheLocks[dburl].RUnlock()
-		infoCacheLocks[dburl].Lock()
-		defer infoCacheLocks[dburl].Unlock()
-		// Load new value into cache.
-		conn, err := pgx.Connect(ctx, dburl)
-		if err != nil {
-			slog.Error("Could not connect to database", errAttr(err))
-			os.Exit(1)
-		}
-		defer conn.Close(ctx)
-
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			slog.Error("Could not create transaction", errAttr(err))
-			os.Exit(1)
-		}
-		defer func() {
-			err = tx.Rollback(ctx)
-			if err != nil && err != pgx.ErrTxClosed {
-				slog.Error("Could not rollback transaction", errAttr(err))
-				os.Exit(1)
-			}
-		}()
-
-		// Gather information on what columns, tables, and fkeys exists.
-		databaseInfo, err := pg_autojoin.GetDatabaseInfoResult(ctx, tx)
-		if err != nil {
-			slog.Error("Could not gather table info", errAttr(err))
-			return nil
-		}
-		databaseInfoCache[dburl] = &databaseInfo
-		return databaseInfoCache[dburl]
 	}
 
 	clientMessageHandlers := proxy.NewClientMessageHandlers()
 
 	clientMessageHandlers.AddHandleQuery(func(ctx *proxy.Ctx, msg *message.Query) (query *message.Query, e error) {
-		dburl := "postgres://"
-		user, hasUser := ctx.ConnInfo.StartupParameters["user"]
-		password, hasPassword := ctx.ConnInfo.StartupParameters["password"]
-		database, hasDatabase := ctx.ConnInfo.StartupParameters["database"]
-		if hasUser {
-			dburl += user
-			if hasPassword {
-				dburl += ":" + password
-			}
-			dburl += "@"
-		}
-		dburl += ctx.ConnInfo.ServerAddress.String()
-		if hasDatabase {
-			dburl += "/" + database
-		}
-		databaseInfo := getDatabaseInfo(ctx.Context, dburl)
-		if databaseInfo == nil {
-			slog.Error("Could not get db info for query")
+		databaseInfo, err := getDatabaseInfo(ctx.Context, buildDbUrl(ctx))
+		if err != nil {
+			slog.Error("Could not get db info for query", errAttr(err))
 			return msg, nil
 		}
 		parsedQuery, err := pg_query.Parse(msg.QueryString)
@@ -126,16 +129,17 @@ func main() {
 		return msg, nil
 	})
 
-	serverStreamCallbackFactories := proxy.NewStreamCallbackFactories()
-
 	server := proxy.Server{
-		PGResolver:                    backend.NewStaticPGResolver("127.0.0.1:5432"),
-		ConnInfoStore:                 backend.NewInMemoryConnInfoStore(),
-		ClientMessageHandlers:         clientMessageHandlers,
-		ServerStreamCallbackFactories: serverStreamCallbackFactories,
+		PGResolver:            backend.NewStaticPGResolver(*proxyPointer),
+		ConnInfoStore:         backend.NewInMemoryConnInfoStore(),
+		ClientMessageHandlers: clientMessageHandlers,
+		// For some reason this is required for ClientMessageHandlers to work.
+		ServerStreamCallbackFactories: proxy.NewStreamCallbackFactories(),
 	}
 
 	go server.Serve(ln)
+
+	slog.Info(fmt.Sprintf("Proxying %s => %s", ln.Addr(), *proxyPointer))
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)

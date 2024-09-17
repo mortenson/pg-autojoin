@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
+	"text/tabwriter"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/mortenson/pg_autojoin"
@@ -18,7 +20,13 @@ func errAttr(err error) slog.Attr {
 
 func main() {
 	verbosePtr := flag.Bool("v", false, "enable verbose output")
+	help := flag.Bool("h", false, "show help")
 	flag.Parse()
+
+	if *help {
+		flag.Usage()
+		os.Exit(0)
+	}
 
 	if *verbosePtr {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
@@ -48,21 +56,8 @@ func main() {
 	}
 	defer conn.Close(ctx)
 
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		slog.Error("Could not create transaction", errAttr(err))
-		os.Exit(1)
-	}
-	defer func() {
-		err = tx.Rollback(ctx)
-		if err != nil && err != pgx.ErrTxClosed {
-			slog.Error("Could not rollback transaction", errAttr(err))
-			os.Exit(1)
-		}
-	}()
-
 	// Gather information on what columns, tables, and fkeys exists.
-	databaseInfo, err := pg_autojoin.GetDatabaseInfoResult(ctx, tx)
+	databaseInfo, err := pg_autojoin.GetDatabaseInfoResult(ctx, conn)
 	if err != nil {
 		slog.Error("Could not gather table info", errAttr(err))
 		os.Exit(1)
@@ -79,6 +74,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Turn parsed query back into string.
 	deparse, err := pg_query.Deparse(parsedQuery)
 	if err != nil {
 		slog.Error("Could not deparse query after adding joins", errAttr(err))
@@ -86,16 +82,34 @@ func main() {
 	}
 	fmt.Printf("Old query:\n\t%s \n", userQuery)
 	fmt.Printf("New query:\n\t%s \n", deparse)
-	rows, err := tx.Query(ctx, deparse)
+
+	// Execute query.
+	rows, err := conn.Query(ctx, deparse)
 	if err != nil {
 		slog.Error("Could not run generated query", errAttr(err))
 		os.Exit(1)
 	}
+	// Format results in a table.
 	count := 0
+	w := tabwriter.NewWriter(os.Stdout, 1, 1, 1, ' ', 0)
+	columns := []string{}
+	headers := []string{}
+	for _, desc := range rows.FieldDescriptions() {
+		columns = append(columns, string(desc.Name))
+		headers = append(headers, strings.Repeat("-", len(desc.Name)))
+	}
+	fmt.Fprintln(w, strings.Join(columns, "\t"))
+	fmt.Fprintln(w, strings.Join(headers, "\t"))
 	for rows.Next() {
 		count++
-		// fmt.Println(rows.Values())
+		columns := []string{}
+		for _, column := range rows.RawValues() {
+			columns = append(columns, string(column))
+		}
+		fmt.Fprintln(w, strings.Join(columns, "\t"))
 	}
+	fmt.Println()
+	w.Flush()
 	fmt.Println()
 	fmt.Printf("Query returned %d rows\n", count)
 }

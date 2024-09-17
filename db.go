@@ -58,8 +58,8 @@ type DatabaseInfo struct {
 	RelationshipGraph graph.Graph[string, string]
 }
 
-func GetDatabaseInfoResult(ctx context.Context, tx pgx.Tx) (DatabaseInfo, error) {
-	rows, err := tx.Query(ctx, columnsWithForeignKeysQuery)
+func GetDatabaseInfoResult(ctx context.Context, conn *pgx.Conn) (DatabaseInfo, error) {
+	rows, err := conn.Query(ctx, columnsWithForeignKeysQuery)
 	if err != nil {
 		return DatabaseInfo{}, err
 	}
