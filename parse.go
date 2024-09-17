@@ -1,6 +1,7 @@
 package pg_autojoin
 
 import (
+	"log/slog"
 	"reflect"
 
 	pg_query "github.com/pganalyze/pg_query_go/v5"
@@ -18,6 +19,13 @@ type QueryColumn struct {
 	Type  QueryColumnType
 	Name  string
 	Alias *string
+}
+
+func (qc QueryColumn) String() string {
+	if qc.Alias != nil {
+		return *qc.Alias + "." + qc.Name
+	}
+	return qc.Name
 }
 
 type QueryTable struct {
@@ -42,14 +50,14 @@ func getColumnsFromRef(ref *pg_query.ColumnRef) []QueryColumn {
 	}
 	if len(svals) == 1 {
 		if len(ref.Fields) == 2 && isWildcard {
-			return []QueryColumn{{QueryColumnTypeTableWildcard, svals[0], nil}}
+			return []QueryColumn{{QueryColumnTypeTableWildcard, "*", &svals[0]}}
 		} else if len(ref.Fields) == 1 {
 			return []QueryColumn{{QueryColumnTypeColumn, svals[0], nil}}
 		}
 	} else if len(svals) == 2 {
 		return []QueryColumn{{QueryColumnTypeAliasedColumn, svals[1], &svals[0]}}
 	} else {
-		// @todo log unknown column construction
+		slog.Debug("Could not determine type of column ref", slog.Any("columnRef", ref))
 	}
 	return []QueryColumn{}
 }
@@ -95,7 +103,7 @@ func TraverseQuery(value interface{}, depth int) Query {
 			Fields: value.(pg_query.ColumnRef).Fields,
 		}
 		for _, col := range getColumnsFromRef(&columnRef) {
-			query.Columns[col.Name] = col
+			query.Columns[col.String()] = col
 		}
 	}
 

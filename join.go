@@ -18,26 +18,67 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 	for _, table := range query.Tables {
 		queryTableNames[table.Name] = table.Name
 	}
+
+	// Aliases are slightly tricky, easier to just always use the alias instead of real table name.
+	tableToAlias := map[string]string{}
+	aliasToTable := map[string]string{}
+	for _, table := range query.Tables {
+		if table.Alias != nil {
+			tableToAlias[table.Name] = *table.Alias
+			aliasToTable[*table.Alias] = table.Name
+		}
+	}
+	aliasTable := func(tableName string) string {
+		aliasName, ok := tableToAlias[tableName]
+		if ok {
+			return aliasName
+		}
+		return tableName
+	}
+	unAliasTable := func(aliasName string) string {
+		tableName, ok := aliasToTable[aliasName]
+		if ok {
+			return tableName
+		}
+		return aliasName
+	}
+
 	allPaths := [][]string{}
 	// Go maps do not respect insert order, so to provide consistent experience for users sort them alphanumerically.
 	queryColumnsSorted := slices.Sorted(maps.Keys(query.Columns))
 	for _, columnKey := range queryColumnsSorted {
+		var tablesThatHaveColumn []string
 		column := query.Columns[columnKey]
-		// @todo add arbitrary join for this case, or any aliases to tables that don't exist.
-		if column.Type == QueryColumnTypeTableWildcard {
-			continue
-		}
-		tablesThatHaveColumn, ok := databaseInfo.ColumnToTable[column.Name]
-		if !ok {
-			return fmt.Errorf("could not find table with column %s, maybe the database schema changed?", column.Name)
-		}
-		// For more consistent behavior.
-		slices.Sort(tablesThatHaveColumn)
 
-		// Users can explicitly say what table they want using aliases.
-		if column.Alias != nil && slices.Contains(tablesThatHaveColumn, *column.Alias) {
-			slog.Debug(fmt.Sprintf("Using alias to imply join for %s.%s", *column.Alias, column.Name))
-			tablesThatHaveColumn = []string{*column.Alias}
+		// Get the table name from the column alias, if possible.
+		var aliasTableName *string
+		if column.Alias != nil {
+			aliasRef := unAliasTable(*column.Alias)
+			_, tableInQuery := queryTableNames[aliasRef]
+			// Alias is likely coming from an existing FROM/JOIN.
+			if tableInQuery {
+				continue
+			}
+			aliasTableName = &aliasRef
+		}
+
+		// For wildcards like foo.*, assume the user wants the "foo" table.
+		if column.Type == QueryColumnTypeTableWildcard {
+			tablesThatHaveColumn = []string{*aliasTableName}
+			// Otherwise, use the database info to find relevant tables.
+		} else {
+			matches, ok := databaseInfo.ColumnToTable[column.Name]
+			if !ok {
+				return fmt.Errorf("could not find table with column %s, maybe the database schema changed?", column.Name)
+			}
+			// For more consistent behavior.
+			slices.Sort(matches)
+			tablesThatHaveColumn = matches
+		}
+
+		if column.Type == QueryColumnTypeAliasedColumn && slices.Contains(tablesThatHaveColumn, *aliasTableName) {
+			slog.Debug(fmt.Sprintf("Using alias to imply join for %s", column))
+			tablesThatHaveColumn = []string{*aliasTableName}
 		}
 
 		columnExistsInQuery := false
@@ -69,30 +110,15 @@ func AddMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 			}
 		}
 		if len(shortestPath) == 0 {
-			slog.Debug(fmt.Sprintf("Cannot find shortest path for %s", column.Name))
+			slog.Debug(fmt.Sprintf("Cannot find shortest path for %s", column))
 			continue
 		} else {
-			slog.Debug(fmt.Sprintf("Shortest path for %s is %s", column.Name, strings.Join(shortestPath, ", ")))
+			slog.Debug(fmt.Sprintf("Shortest path for %s is %s", column, strings.Join(shortestPath, ", ")))
 			allPaths = append(allPaths, shortestPath)
 			for _, pathTableName := range shortestPath {
 				queryTableNames[pathTableName] = pathTableName
 			}
 		}
-	}
-
-	// Aliases are slightly tricky, easier to just always use the alias instead of real table name.
-	tableToAlias := map[string]string{}
-	for _, table := range query.Tables {
-		if table.Alias != nil {
-			tableToAlias[table.Name] = *table.Alias
-		}
-	}
-	aliasTable := func(tableName string) string {
-		aliasName, ok := tableToAlias[tableName]
-		if ok {
-			return aliasName
-		}
-		return tableName
 	}
 
 	for _, path := range allPaths {
