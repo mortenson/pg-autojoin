@@ -3,6 +3,7 @@ package pg_autojoin
 import (
 	"context"
 
+	"github.com/dominikbraun/graph"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -45,19 +46,26 @@ type ForeignKey struct {
 }
 
 type TableInfo struct {
+	Name    string
 	Columns []string
 	// Constraint -> Fkey
 	ForeignKeys map[string]*ForeignKey
 }
 
-func GetTableInfoResult(ctx context.Context, tx pgx.Tx) (map[string]*TableInfo, error) {
+type DatabaseInfo struct {
+	Tables            map[string]*TableInfo
+	ColumnToTable     map[string][]string
+	RelationshipGraph graph.Graph[string, string]
+}
+
+func GetDatabaseInfoResult(ctx context.Context, tx pgx.Tx) (DatabaseInfo, error) {
 	rows, err := tx.Query(ctx, columnsWithForeignKeysQuery)
 	if err != nil {
-		return nil, err
+		return DatabaseInfo{}, err
 	}
 	defer rows.Close()
 
-	result := map[string]*TableInfo{}
+	tableInfo := map[string]*TableInfo{}
 
 	for rows.Next() {
 		var fromTableName string
@@ -67,31 +75,56 @@ func GetTableInfoResult(ctx context.Context, tx pgx.Tx) (map[string]*TableInfo, 
 		var constaintName string
 		err = rows.Scan(&fromTableName, &fromColumnName, &toTableName, &toColumnName, &constaintName)
 		if err != nil {
-			return nil, err
+			return DatabaseInfo{}, err
 		}
-		_, tableExists := result[fromTableName]
+		_, tableExists := tableInfo[fromTableName]
 		if !tableExists {
-			result[fromTableName] = &TableInfo{
+			tableInfo[fromTableName] = &TableInfo{
+				Name:        fromTableName,
 				Columns:     []string{},
 				ForeignKeys: map[string]*ForeignKey{},
 			}
 		}
-		result[fromTableName].Columns = append(result[fromTableName].Columns, fromColumnName)
+		tableInfo[fromTableName].Columns = append(tableInfo[fromTableName].Columns, fromColumnName)
 		if constaintName != "" {
-			_, fkeyExists := result[fromTableName].ForeignKeys[constaintName]
+			_, fkeyExists := tableInfo[fromTableName].ForeignKeys[constaintName]
 			if !fkeyExists {
-				result[fromTableName].ForeignKeys[constaintName] = &ForeignKey{
+				tableInfo[fromTableName].ForeignKeys[constaintName] = &ForeignKey{
 					ToTable:          toTableName,
 					ColumnConditions: [][2]string{},
 				}
 			}
 			if fromColumnName != "" && toColumnName != "" {
-				result[fromTableName].ForeignKeys[constaintName].ColumnConditions = append(
-					result[fromTableName].ForeignKeys[constaintName].ColumnConditions,
+				tableInfo[fromTableName].ForeignKeys[constaintName].ColumnConditions = append(
+					tableInfo[fromTableName].ForeignKeys[constaintName].ColumnConditions,
 					[2]string{fromColumnName, toColumnName},
 				)
 			}
 		}
 	}
-	return result, nil
+
+	// Add all tables to a graph.
+	relationshipGraph := graph.New(graph.StringHash, graph.Directed())
+	for tableName := range tableInfo {
+		relationshipGraph.AddVertex(tableName)
+	}
+	for tableName, table := range tableInfo {
+		for _, fkey := range table.ForeignKeys {
+			relationshipGraph.AddEdge(tableName, fkey.ToTable)
+		}
+	}
+
+	// Create a map of column name to table name for future use.
+	columnToTable := map[string][]string{}
+	for tableName, table := range tableInfo {
+		for _, column := range table.Columns {
+			_, ok := columnToTable[column]
+			if !ok {
+				columnToTable[column] = []string{}
+			}
+			columnToTable[column] = append(columnToTable[column], tableName)
+		}
+	}
+
+	return DatabaseInfo{tableInfo, columnToTable, relationshipGraph}, nil
 }

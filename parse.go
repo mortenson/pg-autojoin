@@ -26,8 +26,8 @@ type QueryTable struct {
 }
 
 type Query struct {
-	Columns []QueryColumn
-	Tables  []QueryTable
+	Columns map[string]QueryColumn
+	Tables  map[string]QueryTable
 }
 
 func getColumnsFromRef(ref *pg_query.ColumnRef) []QueryColumn {
@@ -55,24 +55,27 @@ func getColumnsFromRef(ref *pg_query.ColumnRef) []QueryColumn {
 }
 
 func mergeQuery(a, b Query) Query {
-	return Query{
-		Columns: append(a.Columns, b.Columns...),
-		Tables:  append(a.Tables, b.Tables...),
+	for name, col := range b.Columns {
+		a.Columns[name] = col
 	}
+	for name, table := range b.Tables {
+		a.Tables[name] = table
+	}
+	return a
 }
 
 // Taken from https://github.com/pganalyze/pg_query_go/issues/18#issuecomment-475632691
 // Traverses the given query AST and pulls all table/column references out of it.
 func TraverseQuery(value interface{}, depth int) Query {
 	query := Query{
-		Columns: []QueryColumn{},
-		Tables:  []QueryTable{},
+		Columns: map[string]QueryColumn{},
+		Tables:  map[string]QueryTable{},
 	}
 
 	if value == nil {
 		return Query{
-			Columns: []QueryColumn{},
-			Tables:  []QueryTable{},
+			Columns: map[string]QueryColumn{},
+			Tables:  map[string]QueryTable{},
 		}
 	}
 
@@ -84,14 +87,16 @@ func TraverseQuery(value interface{}, depth int) Query {
 		if value.(pg_query.RangeVar).Alias != nil {
 			alias = &value.(pg_query.RangeVar).Alias.Aliasname
 		}
-		query.Tables = append(query.Tables, QueryTable{value.(pg_query.RangeVar).Relname, alias})
+		query.Tables[value.(pg_query.RangeVar).Relname] = QueryTable{value.(pg_query.RangeVar).Relname, alias}
 	}
 
 	if v.Type() == reflect.TypeOf(pg_query.ColumnRef{}) {
 		columnRef := pg_query.ColumnRef{
 			Fields: value.(pg_query.ColumnRef).Fields,
 		}
-		query.Columns = append(query.Columns, getColumnsFromRef(&columnRef)...)
+		for _, col := range getColumnsFromRef(&columnRef) {
+			query.Columns[col.Name] = col
+		}
 	}
 
 	switch t.Kind() {
