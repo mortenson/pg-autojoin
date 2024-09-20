@@ -17,4 +17,4 @@ require (
 	google.golang.org/protobuf v1.31.0 // indirect
 )
 
-replace github.com/rueian/pgbroker => github.com/mortenson/pgbroker v0.0.1
+replace github.com/rueian/pgbroker => github.com/mortenson/pgbroker v0.0.2

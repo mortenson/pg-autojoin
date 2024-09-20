@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -80,11 +81,11 @@ func buildDbUrl(ctx *proxy.Ctx) string {
 }
 
 func main() {
-	verbosePtr := flag.Bool("v", false, "enable verbose output")
-	listenPointer := flag.String("l", "127.0.0.1:5337", "local listen address")
-	proxyPointer := flag.String("r", "127.0.0.1:5432", "remote postgres server address")
-	prefix := flag.Bool("prefix", false, "prefix row descriptors with the newly joined table")
-	help := flag.Bool("h", false, "show help")
+	verbosePtr := flag.Bool("verbose", false, "enable verbose output")
+	listenPointer := flag.String("listen", "127.0.0.1:5337", "local listen address")
+	proxyPointer := flag.String("proxy", "127.0.0.1:5432", "remote postgres server address")
+	prefix := flag.Bool("prefix", true, "prefix row descriptors with the newly joined table (ex: email => users_email)")
+	help := flag.Bool("help", false, "show help")
 	flag.Parse()
 
 	if *help {
@@ -96,6 +97,20 @@ func main() {
 
 	if *verbosePtr {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
+	}
+
+	var tlsConfig *tls.Config
+	certFile := os.Getenv("PG_AUTOJOIN_CERTFILE")
+	keyFile := os.Getenv("PG_AUTOJOIN_KEYFILE")
+	if certFile != "" && keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			slog.Error("Cannot load TLS keypair", errAttr(err))
+			os.Exit(1)
+		}
+		tlsConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+		}
 	}
 
 	ln, err := net.Listen("tcp", *listenPointer)
@@ -157,6 +172,7 @@ func main() {
 		ConnInfoStore:         backend.NewInMemoryConnInfoStore(),
 		ClientMessageHandlers: clientMessageHandlers,
 		ServerMessageHandlers: serverMessageHandlers,
+		TLSConfig:             tlsConfig,
 		// For some reason this is required for ClientMessageHandlers to work.
 		ServerStreamCallbackFactories: proxy.NewStreamCallbackFactories(),
 	}

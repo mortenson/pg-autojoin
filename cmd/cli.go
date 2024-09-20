@@ -19,8 +19,8 @@ func errAttr(err error) slog.Attr {
 }
 
 func main() {
-	verbosePtr := flag.Bool("v", false, "enable verbose output")
-	help := flag.Bool("h", false, "show help")
+	verbosePtr := flag.Bool("verbose", false, "enable verbose output")
+	help := flag.Bool("help", false, "show help")
 	flag.Parse()
 
 	if *help {
@@ -34,7 +34,6 @@ func main() {
 
 	args := flag.Args()
 
-	// Connect to database and open transaction.
 	dburl := os.Getenv("DATABASE_URL")
 	if dburl == "" {
 		slog.Error("DATABASE_URL env variable is required")
@@ -68,7 +67,7 @@ func main() {
 		slog.Error("Could not parse query", errAttr(err))
 		os.Exit(1)
 	}
-	err = pg_autojoin.AddMissingJoinsToQuery(parsedQuery, databaseInfo)
+	_, err = pg_autojoin.AddMissingJoinsToQuery(parsedQuery, databaseInfo)
 	if err != nil {
 		slog.Error("Could not add missing joins to query", errAttr(err))
 		os.Exit(1)
