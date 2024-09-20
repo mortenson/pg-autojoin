@@ -19,8 +19,10 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 
 	// Set up some helpful maps for later.
 	queryTableNames := map[string]string{}
+	originalQueryTableNames := map[string]string{}
 	for _, table := range query.Tables {
 		queryTableNames[table.Name] = table.Name
+		originalQueryTableNames[table.Name] = table.Name
 	}
 
 	tableToAlias := map[string]string{}
@@ -101,15 +103,14 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 		for _, otherTableName := range tablesThatHaveColumn {
 			for _, queryTableName := range queryTableNames {
 				path, _ := graph.ShortestPath(databaseInfo.RelationshipGraph, queryTableName, otherTableName)
-				// The graph is directed so need to explicitly try the other direction.
-				if len(path) == 0 {
-					path, _ = graph.ShortestPath(databaseInfo.RelationshipGraph, otherTableName, queryTableName)
-					slices.Reverse(path)
-				}
 				if len(path) == 0 {
 					continue
 				}
-				if len(shortestPath) == 0 || len(path) <= len(shortestPath) {
+				_, isOriginalQueryTable := originalQueryTableNames[queryTableName]
+				if len(shortestPath) == 0 ||
+					len(path) < len(shortestPath) ||
+					// Break ties if the path is coming from a table the user had in their original query.
+					(len(path) == len(shortestPath) && isOriginalQueryTable) {
 					shortestPath = path
 				}
 			}

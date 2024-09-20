@@ -105,7 +105,7 @@ func GetDatabaseInfoResult(ctx context.Context, conn *pgx.Conn) (DatabaseInfo, e
 	}
 
 	// Add all tables to a graph.
-	relationshipGraph := graph.New(graph.StringHash, graph.Directed())
+	relationshipGraph := graph.New(graph.StringHash)
 	for tableName := range tableInfo {
 		relationshipGraph.AddVertex(tableName)
 	}

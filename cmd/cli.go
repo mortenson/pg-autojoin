@@ -20,6 +20,7 @@ func errAttr(err error) slog.Attr {
 
 func main() {
 	verbosePtr := flag.Bool("verbose", false, "enable verbose output")
+	noExec := flag.Bool("noexec", false, "do not execute generated query")
 	help := flag.Bool("help", false, "show help")
 	flag.Parse()
 
@@ -81,6 +82,10 @@ func main() {
 	}
 	fmt.Printf("Old query:\n\t%s \n", userQuery)
 	fmt.Printf("New query:\n\t%s \n", deparse)
+
+	if *noExec {
+		return
+	}
 
 	// Execute query.
 	rows, err := conn.Query(ctx, deparse)
