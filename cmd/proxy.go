@@ -83,6 +83,7 @@ func main() {
 	verbosePtr := flag.Bool("v", false, "enable verbose output")
 	listenPointer := flag.String("l", "127.0.0.1:5337", "local listen address")
 	proxyPointer := flag.String("r", "127.0.0.1:5432", "remote postgres server address")
+	prefix := flag.Bool("prefix", false, "prefix row descriptors with the newly joined table")
 	help := flag.Bool("h", false, "show help")
 	flag.Parse()
 
@@ -90,6 +91,8 @@ func main() {
 		flag.Usage()
 		os.Exit(0)
 	}
+
+	shouldPrefixFieldDescriptors := *prefix
 
 	if *verbosePtr {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
@@ -113,7 +116,7 @@ func main() {
 			slog.Error("Could not parse query", errAttr(err))
 			return msg, nil
 		}
-		err = pg_autojoin.AddMissingJoinsToQuery(parsedQuery, *databaseInfo)
+		columnToTableMap, err := pg_autojoin.AddMissingJoinsToQuery(parsedQuery, *databaseInfo)
 		if err != nil {
 			slog.Error("Could not add missing joins to query", errAttr(err))
 			return msg, nil
@@ -126,6 +129,26 @@ func main() {
 		slog.Debug(fmt.Sprintf("Old query:\n\t%s \n", msg.QueryString))
 		slog.Debug(fmt.Sprintf("New query:\n\t%s \n", deparse))
 		msg.QueryString = deparse
+
+		ctx.ExtraData = map[string]interface{}{}
+		ctx.ExtraData["columnToTableMap"] = columnToTableMap
+
+		return msg, nil
+	})
+
+	serverMessageHandlers := proxy.NewServerMessageHandlers()
+
+	serverMessageHandlers.AddHandleRowDescription(func(ctx *proxy.Ctx, msg *message.RowDescription) (*message.RowDescription, error) {
+		columnToTableMap, ok := ctx.ExtraData["columnToTableMap"].(map[string]string)
+		if !ok || !shouldPrefixFieldDescriptors {
+			return msg, nil
+		}
+		for i := range msg.Fields {
+			table, hasTable := columnToTableMap[msg.Fields[i].Name]
+			if hasTable {
+				msg.Fields[i].Name = table + "_" + msg.Fields[i].Name
+			}
+		}
 		return msg, nil
 	})
 
@@ -133,6 +156,7 @@ func main() {
 		PGResolver:            backend.NewStaticPGResolver(*proxyPointer),
 		ConnInfoStore:         backend.NewInMemoryConnInfoStore(),
 		ClientMessageHandlers: clientMessageHandlers,
+		ServerMessageHandlers: serverMessageHandlers,
 		// For some reason this is required for ClientMessageHandlers to work.
 		ServerStreamCallbackFactories: proxy.NewStreamCallbackFactories(),
 	}

@@ -11,7 +11,9 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
-func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) error {
+func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) (map[string]string, error) {
+	columnToTableMap := map[string]string{}
+
 	// Parse the query.
 	query := TraverseQuery(stmt, 0)
 
@@ -69,7 +71,7 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 		} else {
 			matches, ok := databaseInfo.ColumnToTable[column.Name]
 			if !ok {
-				return fmt.Errorf("could not find table with column %s, maybe the database schema changed?", column.Name)
+				return columnToTableMap, fmt.Errorf("could not find table with column %s, maybe the database schema changed?", column.Name)
 			}
 			// For more consistent behavior between runs.
 			tablesThatHaveColumn = slices.Clone(matches)
@@ -118,6 +120,7 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 		} else {
 			slog.Debug(fmt.Sprintf("Shortest path for %s is %s", column, strings.Join(shortestPath, ", ")))
 			allPaths = append(allPaths, shortestPath)
+			columnToTableMap[column.Name] = shortestPath[len(shortestPath)-1]
 			// Update queryTableNames so that sub-paths (JOINs) are never duplicated.
 			for _, pathTableName := range shortestPath {
 				queryTableNames[pathTableName] = pathTableName
@@ -154,7 +157,7 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 				}
 			}
 			if matchingFkey == nil {
-				return fmt.Errorf("could not find matching foreign key for %s <=> %s", lastTable, tableName)
+				return columnToTableMap, fmt.Errorf("could not find matching foreign key for %s <=> %s", lastTable, tableName)
 			}
 
 			// It's much easier parse a dummy query into an AST than constructing an AST ourselves.
@@ -167,7 +170,7 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 			joinQuery += strings.Join(conditions, " AND ")
 			joinParsed, err := pg_query.Parse(joinQuery)
 			if err != nil {
-				return err
+				return columnToTableMap, err
 			}
 			// Wrap existing from clause with the new join.
 			joinParsed.Stmts[0].Stmt.GetSelectStmt().FromClause[0].GetJoinExpr().Larg = stmt.Stmt.GetSelectStmt().FromClause[0]
@@ -178,20 +181,22 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 		}
 	}
 
-	return nil
+	return columnToTableMap, nil
 }
 
 // Attempts to add JOINs to queries that reference columns from other tables.
-func AddMissingJoinsToQuery(parsedQuery *pg_query.ParseResult, databaseInfo DatabaseInfo) error {
+func AddMissingJoinsToQuery(parsedQuery *pg_query.ParseResult, databaseInfo DatabaseInfo) (map[string]string, error) {
+	columnToTableMap := map[string]string{}
 	for _, stmt := range parsedQuery.GetStmts() {
 		// We can only safely do this on SELECTs.
 		if stmt.Stmt.GetSelectStmt() == nil {
 			continue
 		}
-		err := addMissingJoinsToSelect(stmt, databaseInfo)
+		tableMap, err := addMissingJoinsToSelect(stmt, databaseInfo)
 		if err != nil {
-			return err
+			return map[string]string{}, err
 		}
+		columnToTableMap = tableMap
 	}
-	return nil
+	return columnToTableMap, nil
 }
