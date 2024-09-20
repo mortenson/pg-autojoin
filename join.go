@@ -72,8 +72,8 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 				return fmt.Errorf("could not find table with column %s, maybe the database schema changed?", column.Name)
 			}
 			// For more consistent behavior between runs.
-			slices.Sort(matches)
-			tablesThatHaveColumn = matches
+			tablesThatHaveColumn = slices.Clone(matches)
+			slices.Sort(tablesThatHaveColumn)
 		}
 
 		if column.Type == QueryColumnTypeAliasedColumn && slices.Contains(tablesThatHaveColumn, *aliasTableName) {
@@ -159,7 +159,7 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 
 			// It's much easier parse a dummy query into an AST than constructing an AST ourselves.
 			// If this is extremely unperformant we can construct an AST, maybe from JSON/protobuf.
-			joinQuery := "select placeholder FROM foo LEFT JOIN " + aliasTable(tableName) + " ON "
+			joinQuery := "select placeholder FROM foo JOIN " + aliasTable(tableName) + " ON "
 			conditions := []string{}
 			for _, fromToPair := range matchingFkey.ColumnConditions {
 				conditions = append(conditions, fmt.Sprintf("%s.%s = %s.%s", aliasTable(fromTable), fromToPair[0], aliasTable(matchingFkey.ToTable), fromToPair[1]))
