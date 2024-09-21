@@ -22,6 +22,7 @@ func main() {
 	verbosePtr := flag.Bool("verbose", false, "enable verbose output")
 	noExec := flag.Bool("noexec", false, "do not execute generated query")
 	help := flag.Bool("help", false, "show help")
+	joinTypePtr := flag.String("jointype", "inner", "default join type (inner or left)")
 	flag.Parse()
 
 	if *help {
@@ -31,6 +32,13 @@ func main() {
 
 	if *verbosePtr {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
+	}
+
+	var joinBehavior pg_autojoin.JoinBehavior
+	if *joinTypePtr == "left" {
+		joinBehavior = pg_autojoin.JoinBehaviorLeftJoin
+	} else {
+		joinBehavior = pg_autojoin.JoinBehaviorInnerJoin
 	}
 
 	args := flag.Args()
@@ -68,7 +76,7 @@ func main() {
 		slog.Error("Could not parse query", errAttr(err))
 		os.Exit(1)
 	}
-	_, err = pg_autojoin.AddMissingJoinsToQuery(parsedQuery, databaseInfo)
+	_, err = pg_autojoin.AddMissingJoinsToQuery(parsedQuery, databaseInfo, joinBehavior)
 	if err != nil {
 		slog.Error("Could not add missing joins to query", errAttr(err))
 		os.Exit(1)

@@ -11,7 +11,14 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
-func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) (map[string]string, error) {
+type JoinBehavior string
+
+var (
+	JoinBehaviorLeftJoin  JoinBehavior = "JoinBehaviorLeftJoin"
+	JoinBehaviorInnerJoin JoinBehavior = "JoinBehaviorInnerJoin"
+)
+
+func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo, joinBehavior JoinBehavior) (map[string]string, error) {
 	columnToTableMap := map[string]string{}
 
 	// Parse the query.
@@ -49,7 +56,6 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 	}
 
 	allPaths := [][]string{}
-	// Go maps do not respect insert order, so to provide consistent experience for users sort them alphanumerically.
 	queryColumnsSorted := slices.Sorted(maps.Keys(query.Columns))
 	for _, columnKey := range queryColumnsSorted {
 		var tablesThatHaveColumn []string
@@ -59,9 +65,14 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 		var aliasTableName *string
 		if column.Alias != nil {
 			aliasRef := unAliasTable(*column.Alias)
-			_, tableInQuery := queryTableNames[aliasRef]
+			table, tableInQuery := queryTableNames[aliasRef]
 			// Alias is likely coming from an existing FROM/JOIN.
 			if tableInQuery {
+				// We should still prefix this column since it came from a new join.
+				_, tableInOriginalQuery := originalQueryTableNames[table]
+				if !tableInOriginalQuery {
+					columnToTableMap[column.Name] = table
+				}
 				continue
 			}
 			aliasTableName = &aliasRef
@@ -75,7 +86,6 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 			if !ok {
 				return columnToTableMap, fmt.Errorf("could not find table with column %s, maybe the database schema changed?", column.Name)
 			}
-			// For more consistent behavior between runs.
 			tablesThatHaveColumn = slices.Clone(matches)
 			slices.Sort(tablesThatHaveColumn)
 		}
@@ -91,6 +101,11 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 			_, tableInQuery := queryTableNames[table]
 			if tableInQuery {
 				columnExistsInQuery = true
+				// We should still prefix this column since it came from a new join.
+				_, tableInOriginalQuery := originalQueryTableNames[table]
+				if !tableInOriginalQuery {
+					columnToTableMap[column.Name] = table
+				}
 				break
 			}
 		}
@@ -100,8 +115,9 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 
 		// We need to join. Find the shortest path from a table that has the column to a table that exists in the query.
 		shortestPath := []string{}
+		queryTableNamesSorted := slices.Sorted(maps.Keys(queryTableNames))
 		for _, otherTableName := range tablesThatHaveColumn {
-			for _, queryTableName := range queryTableNames {
+			for _, queryTableName := range queryTableNamesSorted {
 				path, _ := graph.ShortestPath(databaseInfo.RelationshipGraph, queryTableName, otherTableName)
 				if len(path) == 0 {
 					continue
@@ -163,7 +179,13 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 
 			// It's much easier parse a dummy query into an AST than constructing an AST ourselves.
 			// If this is extremely unperformant we can construct an AST, maybe from JSON/protobuf.
-			joinQuery := "select placeholder FROM foo JOIN " + aliasTable(tableName) + " ON "
+			var joinStr string
+			if joinBehavior == JoinBehaviorInnerJoin {
+				joinStr = "JOIN"
+			} else {
+				joinStr = "LEFT JOIN"
+			}
+			joinQuery := fmt.Sprintf("select placeholder FROM foo %s %s ON ", joinStr, aliasTable(tableName))
 			conditions := []string{}
 			for _, fromToPair := range matchingFkey.ColumnConditions {
 				conditions = append(conditions, fmt.Sprintf("%s.%s = %s.%s", aliasTable(fromTable), fromToPair[0], aliasTable(matchingFkey.ToTable), fromToPair[1]))
@@ -186,14 +208,14 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo) 
 }
 
 // Attempts to add JOINs to queries that reference columns from other tables.
-func AddMissingJoinsToQuery(parsedQuery *pg_query.ParseResult, databaseInfo DatabaseInfo) (map[string]string, error) {
+func AddMissingJoinsToQuery(parsedQuery *pg_query.ParseResult, databaseInfo DatabaseInfo, joinBehavior JoinBehavior) (map[string]string, error) {
 	columnToTableMap := map[string]string{}
 	for _, stmt := range parsedQuery.GetStmts() {
 		// We can only safely do this on SELECTs.
 		if stmt.Stmt.GetSelectStmt() == nil {
 			continue
 		}
-		tableMap, err := addMissingJoinsToSelect(stmt, databaseInfo)
+		tableMap, err := addMissingJoinsToSelect(stmt, databaseInfo, joinBehavior)
 		if err != nil {
 			return map[string]string{}, err
 		}

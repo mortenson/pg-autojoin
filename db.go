@@ -58,8 +58,12 @@ type DatabaseInfo struct {
 	RelationshipGraph graph.Graph[string, string]
 }
 
+type Queryer interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // Gathers information about every table's column and foreign key.
-func GetDatabaseInfoResult(ctx context.Context, conn *pgx.Conn) (DatabaseInfo, error) {
+func GetDatabaseInfoResult(ctx context.Context, conn Queryer) (DatabaseInfo, error) {
 	rows, err := conn.Query(ctx, columnsWithForeignKeysQuery)
 	if err != nil {
 		return DatabaseInfo{}, err

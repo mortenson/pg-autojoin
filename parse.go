@@ -48,6 +48,10 @@ func getColumnsFromRef(ref *pg_query.ColumnRef) []QueryColumn {
 			isWildcard = true
 		}
 	}
+	// Literal "*"
+	if isWildcard && len(svals) == 0 {
+		return []QueryColumn{}
+	}
 	if len(svals) == 1 {
 		if len(ref.Fields) == 2 && isWildcard {
 			return []QueryColumn{{QueryColumnTypeTableWildcard, "*", &svals[0]}}
