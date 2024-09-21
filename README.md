@@ -78,5 +78,7 @@ machine:
 - Limit the proxy server's egress so that it can only hit the destination
 PostgreSQL host
 - Only connect to the proxy with read only users
+- Enable TLS by setting `PG_AUTOJOIN_CERTFILE` and `PG_AUTOJOIN_KEYFILE`
 - Consider running the proxy with the `--onlyjoin` flag, which will only let it
-respond to queries that include `AUTOJOIN` and does not execute the final query
+respond to queries that include `AUTOJOIN` and does not execute the final
+query. Probably good for performance at the cost of magic.

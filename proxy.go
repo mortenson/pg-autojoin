@@ -28,7 +28,7 @@ type ProxyServerConfig struct {
 	ProxyAddress                 string
 	MaxCacheTTL                  time.Duration
 	JoinBehavior                 JoinBehavior
-	TlsConfig                    *tls.Config
+	TLSConfig                    *tls.Config
 }
 
 func errAttr(err error) slog.Attr {
@@ -46,7 +46,7 @@ func (s *ProxyServer) Shutdown() {
 func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 	clientMessageHandlers := proxy.NewClientMessageHandlers()
 
-	clientMessageHandlers.AddHandleQuery(func(ctx *proxy.Ctx, msg *message.Query) (query *message.Query, e error) {
+	clientMessageHandlers.AddHandleParse(func(ctx *proxy.Ctx, msg *message.Parse) (query *message.Parse, e error) {
 		queryString := msg.QueryString
 		onlyJoin := strings.Contains(queryString, "AUTOJOIN")
 		if onlyJoin {
@@ -112,7 +112,7 @@ func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 			ConnInfoStore:         backend.NewInMemoryConnInfoStore(),
 			ClientMessageHandlers: clientMessageHandlers,
 			ServerMessageHandlers: serverMessageHandlers,
-			TLSConfig:             cfg.TlsConfig,
+			TLSConfig:             cfg.TLSConfig,
 			// For some reason this is required for ClientMessageHandlers to work.
 			ServerStreamCallbackFactories: proxy.NewStreamCallbackFactories(),
 		},
@@ -136,7 +136,7 @@ func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duratio
 	lock.RLock()
 	cacheInfo, hasCacheInfo := databaseInfoCache[dburl]
 	lock.RUnlock()
-	if hasCacheInfo && time.Since(cacheInfo.CreatedAt) < maxCacheTTL {
+	if hasCacheInfo && maxCacheTTL != 0 && time.Since(cacheInfo.CreatedAt) < maxCacheTTL {
 		return cacheInfo.DatabaseInfo, nil
 	}
 

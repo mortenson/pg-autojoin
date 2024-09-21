@@ -70,7 +70,7 @@ func main() {
 		ProxyAddress:                 *proxyPointer,
 		MaxCacheTTL:                  time.Second * time.Duration(*cacheTTL),
 		JoinBehavior:                 joinBehavior,
-		TlsConfig:                    tlsConfig,
+		TLSConfig:                    tlsConfig,
 	})
 
 	go server.Serve(ln)
