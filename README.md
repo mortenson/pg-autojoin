@@ -61,13 +61,36 @@ for trying out pg_autojoin.
 
 1. Run go install github.com/mortenson/pg_autojoin/cmd/pg_autojoin@latest
 2. Set the DATABASE_URL env variable to a PostgreSQL connection string
-3. Run pg_autojoin <your query>
+3. Run `pg_autojoin <your query>`
 
 Run `pg_autojoin --help` for information on flags.
 
 ### Proxy a PostgreSQL installation
 
+The `pg_autojoin_proxy` command lets you proxy your PostgreSQL server and
+add joins to all SELECTs that need them.
 
+1. Run go install github.com/mortenson/pg_autojoin/cmd/pg_autojoin_proxy@latest
+3. Run `pg_autojoin_proxy --listen=<address to listen on> --proxy=<address to proxy>`
+
+Then in your client (ex: `psql`), connect to the proxy instead of the real
+PostgreSQL instance.
+
+There are some behaviors that differ from the CLI:
+
+- Columns are prefixed with the newly joined table name. Since clients are
+assumed to be humans using `psql` or another interactive tool, it's nice to
+tell them where data is coming from instead of being completely opaque.
+- You can prefix your SELECTs with `AUTOJOIN` to have the proxy just return
+your query with joins added. ex: `AUTOJOIN SELECT email, image_url FROM users;`
+
+Run `pg_autojoin_proxy --help` for information on flags, but here are some
+useful ones to know:
+
+- `--cachettl=<number>` - How long database schema should be cached in seconds
+- `--onlyjoin=true` - Only respond to queries that include `AUTOJOIN`. less
+magical than always trying to autojoin but lets users choose what they want,
+and copy+paste the joined query which is nice. Defaults to `false`.
 
 ## Security
 
@@ -79,6 +102,3 @@ machine:
 PostgreSQL host
 - Only connect to the proxy with read only users
 - Enable TLS by setting `PG_AUTOJOIN_CERTFILE` and `PG_AUTOJOIN_KEYFILE`
-- Consider running the proxy with the `--onlyjoin` flag, which will only let it
-respond to queries that include `AUTOJOIN` and does not execute the final
-query. Probably good for performance at the cost of magic.
