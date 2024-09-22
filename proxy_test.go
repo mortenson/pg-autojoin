@@ -15,7 +15,7 @@ func TestProxy(t *testing.T) {
 	require.NoError(t, err)
 
 	server := NewProxyServer(ProxyServerConfig{
-		ProxyAddress: "127.0.0.1:5432",
+		ProxyAddress: ":5432",
 	})
 
 	go server.Serve(ln) //nolint:all
