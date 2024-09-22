@@ -111,11 +111,17 @@ func GetDatabaseInfoResult(ctx context.Context, conn Queryer) (DatabaseInfo, err
 	// Add all tables to a graph.
 	relationshipGraph := graph.New(graph.StringHash)
 	for tableName := range tableInfo {
-		relationshipGraph.AddVertex(tableName)
+		err = relationshipGraph.AddVertex(tableName)
+		if err != nil {
+			return DatabaseInfo{}, err
+		}
 	}
 	for tableName, table := range tableInfo {
 		for _, fkey := range table.ForeignKeys {
-			relationshipGraph.AddEdge(tableName, fkey.ToTable)
+			err = relationshipGraph.AddEdge(tableName, fkey.ToTable)
+			if err != nil {
+				return DatabaseInfo{}, err
+			}
 		}
 	}
 

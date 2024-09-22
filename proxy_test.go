@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
@@ -17,9 +16,9 @@ func TestProxy(t *testing.T) {
 
 	server := NewProxyServer(ProxyServerConfig{
 		ProxyAddress: "127.0.0.1:5432",
-		MaxCacheTTL:  time.Duration(0),
 	})
-	go server.Serve(ln)
+
+	go server.Serve(ln) //nolint:all
 	defer server.Shutdown()
 
 	// @todo use temp database since I can't use transactions
@@ -35,8 +34,8 @@ func TestProxy(t *testing.T) {
 	defer conn.Close(ctx)
 
 	_, err = conn.Exec(ctx, `
-		DROP TABLE proxy_test_avatars;
-		DROP TABLE proxy_test_users;
+		DROP TABLE IF EXISTS proxy_test_avatars;
+		DROP TABLE IF EXISTS proxy_test_users;
 
 		CREATE TABLE proxy_test_users (
 			id INT NOT NULL PRIMARY KEY,
@@ -60,8 +59,9 @@ func TestProxy(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "foo@bar.com", email)
 	require.Equal(t, "image.png", imageUrl)
-	conn.Exec(ctx, `
-		DROP TABLE proxy_test_users;
-		DROP TABLE proxy_test_avatars;
+	_, err = conn.Exec(ctx, `
+		DROP TABLE IF EXISTS proxy_test_avatars;
+		DROP TABLE IF EXISTS proxy_test_users;
 	`)
+	require.NoError(t, err)
 }

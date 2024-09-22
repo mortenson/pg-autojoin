@@ -43,50 +43,62 @@ func (s *ProxyServer) Shutdown() {
 	s.server.Shutdown()
 }
 
+func handleQueryStringMessage(cfg ProxyServerConfig, ctx *proxy.Ctx, queryString string) string {
+	defaultReturn := queryString
+
+	onlyJoin := strings.Contains(queryString, "AUTOJOIN")
+	if onlyJoin {
+		queryString = strings.ReplaceAll(queryString, "AUTOJOIN", "")
+		defaultReturn = "SELECT 'unable to autojoin' AS new_query;"
+	} else if cfg.OnlyRespondToAutoJoins {
+		return defaultReturn
+	}
+
+	databaseInfo, err := getDatabaseInfo(ctx.Context, buildDbUrl(ctx), cfg.MaxCacheTTL)
+	if err != nil {
+		slog.Error("Could not get db info for query", errAttr(err))
+		return defaultReturn
+	}
+	parsedQuery, err := pg_query.Parse(queryString)
+	if err != nil {
+		slog.Debug("Could not parse query", errAttr(err))
+		return defaultReturn
+	}
+	columnToTableMap, err := AddMissingJoinsToQuery(parsedQuery, *databaseInfo, cfg.JoinBehavior)
+	if err != nil {
+		slog.Debug("Could not add missing joins to query", errAttr(err))
+		return defaultReturn
+	}
+	deparse, err := pg_query.Deparse(parsedQuery)
+	if err != nil {
+		slog.Debug("Could not deparse query after adding joins", errAttr(err))
+		return defaultReturn
+	}
+	slog.Debug(fmt.Sprintf("Old query:\n\t%s \n", queryString))
+	slog.Debug(fmt.Sprintf("New query:\n\t%s \n", deparse))
+
+	if onlyJoin {
+		return fmt.Sprintf("SELECT %s AS new_query;", pq.QuoteLiteral(deparse))
+	} else {
+		ctx.ExtraData = map[string]interface{}{}
+		ctx.ExtraData["columnToTableMap"] = columnToTableMap
+		return deparse
+	}
+}
+
 func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 	clientMessageHandlers := proxy.NewClientMessageHandlers()
 
+	// I'm not exactly sure when parse and query happen - psql seems to never
+	// send requests to parse, but some clients like pgx do, so I guess handle
+	// both the same.
 	clientMessageHandlers.AddHandleParse(func(ctx *proxy.Ctx, msg *message.Parse) (query *message.Parse, e error) {
-		queryString := msg.QueryString
-		onlyJoin := strings.Contains(queryString, "AUTOJOIN")
-		if onlyJoin {
-			queryString = strings.ReplaceAll(queryString, "AUTOJOIN", "")
-			msg.QueryString = "SELECT 'unable to autojoin' AS new_query;"
-		} else if cfg.OnlyRespondToAutoJoins {
-			return msg, nil
-		}
+		msg.QueryString = handleQueryStringMessage(cfg, ctx, msg.QueryString)
+		return msg, nil
+	})
 
-		databaseInfo, err := getDatabaseInfo(ctx.Context, buildDbUrl(ctx), cfg.MaxCacheTTL)
-		if err != nil {
-			slog.Error("Could not get db info for query", errAttr(err))
-			return msg, nil
-		}
-		parsedQuery, err := pg_query.Parse(queryString)
-		if err != nil {
-			slog.Debug("Could not parse query", errAttr(err))
-			return msg, nil
-		}
-		columnToTableMap, err := AddMissingJoinsToQuery(parsedQuery, *databaseInfo, cfg.JoinBehavior)
-		if err != nil {
-			slog.Debug("Could not add missing joins to query", errAttr(err))
-			return msg, nil
-		}
-		deparse, err := pg_query.Deparse(parsedQuery)
-		if err != nil {
-			slog.Debug("Could not deparse query after adding joins", errAttr(err))
-			return msg, nil
-		}
-		slog.Debug(fmt.Sprintf("Old query:\n\t%s \n", queryString))
-		slog.Debug(fmt.Sprintf("New query:\n\t%s \n", deparse))
-
-		if onlyJoin {
-			msg.QueryString = fmt.Sprintf("SELECT %s AS new_query;", pq.QuoteLiteral(deparse))
-		} else {
-			msg.QueryString = deparse
-			ctx.ExtraData = map[string]interface{}{}
-			ctx.ExtraData["columnToTableMap"] = columnToTableMap
-		}
-
+	clientMessageHandlers.AddHandleQuery(func(ctx *proxy.Ctx, msg *message.Query) (query *message.Query, e error) {
+		msg.QueryString = handleQueryStringMessage(cfg, ctx, msg.QueryString)
 		return msg, nil
 	})
 
