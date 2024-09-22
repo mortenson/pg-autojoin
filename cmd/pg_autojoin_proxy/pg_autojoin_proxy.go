@@ -73,7 +73,7 @@ func main() {
 		TLSConfig:                    tlsConfig,
 	})
 
-	go server.Serve(ln)
+	go server.Serve(ln) //nolint:all
 
 	slog.Info(fmt.Sprintf("Proxying %s => %s", ln.Addr(), *proxyPointer))
 
