@@ -14,10 +14,6 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
-func errAttr(err error) slog.Attr {
-	return slog.Any("error", err)
-}
-
 func main() {
 	verbosePtr := flag.Bool("verbose", false, "enable verbose output")
 	noExec := flag.Bool("noexec", false, "do not execute generated query")
@@ -59,7 +55,7 @@ func main() {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, dburl)
 	if err != nil {
-		slog.Error("Could not connect to database", errAttr(err))
+		slog.Error("Could not connect to database", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer conn.Close(ctx)
@@ -67,25 +63,25 @@ func main() {
 	// Gather information on what columns, tables, and fkeys exists.
 	databaseInfo, err := pg_autojoin.GetDatabaseInfoResult(ctx, conn)
 	if err != nil {
-		slog.Error("Could not gather table info", errAttr(err))
+		slog.Error("Could not gather table info", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	parsedQuery, err := pg_query.Parse(userQuery)
 	if err != nil {
-		slog.Error("Could not parse query", errAttr(err))
+		slog.Error("Could not parse query", slog.Any("error", err))
 		os.Exit(1)
 	}
 	_, err = pg_autojoin.AddMissingJoinsToQuery(parsedQuery, databaseInfo, joinBehavior)
 	if err != nil {
-		slog.Error("Could not add missing joins to query", errAttr(err))
+		slog.Error("Could not add missing joins to query", slog.Any("error", err))
 		os.Exit(1)
 	}
 
 	// Turn parsed query back into string.
 	deparse, err := pg_query.Deparse(parsedQuery)
 	if err != nil {
-		slog.Error("Could not deparse query after adding joins", errAttr(err))
+		slog.Error("Could not deparse query after adding joins", slog.Any("error", err))
 		os.Exit(1)
 	}
 	fmt.Printf("Old query:\n\t%s \n", userQuery)
@@ -98,7 +94,7 @@ func main() {
 	// Execute query.
 	rows, err := conn.Query(ctx, deparse)
 	if err != nil {
-		slog.Error("Could not run generated query", errAttr(err))
+		slog.Error("Could not run generated query", slog.Any("error", err))
 		os.Exit(1)
 	}
 	// Format results in a table.

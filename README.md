@@ -38,8 +38,6 @@ SELECT email, image_url FROM users
 In general, the table that has a missing column and is "closest" to a table
 that is already in the query will be joined.
 
-### Explicit target tables with qualified column names
-
 Things can get slightly awkward when tables have duplicate column names. If you
 know the table you want to join (at any depth), you can use qualified column
 names.
@@ -81,8 +79,10 @@ There are some behaviors that differ from the CLI:
 - Columns are prefixed with the newly joined table name. Since clients are
 assumed to be humans using `psql` or another interactive tool, it's nice to
 tell them where data is coming from instead of being completely opaque.
-- You can prefix your SELECTs with `AUTOJOIN` to have the proxy just return
-your query with joins added. ex: `AUTOJOIN SELECT email, image_url FROM users;`
+- You can prefix your query with `AUTOJOIN` to have the proxy just
+return your query with joins added. `AUTOJOIN VERBOSE` will show you
+all possible tables to join for every missing column, which can make it clear
+what qualified columns you need to add.
 
 Run `pg_autojoin_proxy --help` for information on flags, but here are some
 useful ones to know:

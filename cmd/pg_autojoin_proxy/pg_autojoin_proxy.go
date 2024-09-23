@@ -14,10 +14,6 @@ import (
 	"github.com/mortenson/pg_autojoin"
 )
 
-func errAttr(err error) slog.Attr {
-	return slog.Any("error", err)
-}
-
 func main() {
 	verbosePtr := flag.Bool("verbose", false, "enable verbose output")
 	listenPointer := flag.String("listen", "127.0.0.1:5337", "local listen address")
@@ -51,7 +47,7 @@ func main() {
 	if certFile != "" && keyFile != "" {
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
-			slog.Error("Cannot load TLS keypair", errAttr(err))
+			slog.Error("Cannot load TLS keypair", slog.Any("error", err))
 			os.Exit(1)
 		}
 		tlsConfig = &tls.Config{

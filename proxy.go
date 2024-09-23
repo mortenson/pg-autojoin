@@ -5,7 +5,10 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -31,10 +34,6 @@ type ProxyServerConfig struct {
 	TLSConfig                    *tls.Config
 }
 
-func errAttr(err error) slog.Attr {
-	return slog.Any("error", err)
-}
-
 func (s *ProxyServer) Serve(ln net.Listener) error {
 	return s.server.Serve(ln)
 }
@@ -43,45 +42,93 @@ func (s *ProxyServer) Shutdown() {
 	s.server.Shutdown()
 }
 
-func handleQueryStringMessage(cfg ProxyServerConfig, ctx *proxy.Ctx, queryString string) string {
-	defaultReturn := queryString
+// Queries can contain multiple statements, so the fact that this looks like
+// EXPLAIN and sits next to a SELECT is kind of a ruse.
+var autojoinKeywordRegexp = regexp.MustCompile("(?i)^AUTOJOIN( VERBOSE)? ")
 
-	onlyJoin := strings.Contains(queryString, "AUTOJOIN")
-	if onlyJoin {
-		queryString = strings.ReplaceAll(queryString, "AUTOJOIN", "")
-		defaultReturn = "SELECT 'unable to autojoin' AS new_query;"
+// When users use AUTOJOIN, we can surface errors to them via the return value.
+// Alternatively, could use RAISE, but that would have to be run on the server
+// and could be really messy.
+func errorMessageAsSelect(msg string) string {
+	return fmt.Sprintf("SELECT %s AS error;", pq.QuoteLiteral(msg))
+}
+
+// When a user sends a query to the server, this callback will fetch database
+// schema if not already cached and add joins to the query.
+// Users can add AUTOJOIN to the start of their query to tell us that they just
+// want us to transform the query and return - in this case, we surface errors
+// directly to them via a SELECT.
+// The function is fairly messy because of the AUTOJOIN behavior, but it's nice
+// to have so that users don't have to go to the server.
+func handleQueryStringMessage(cfg ProxyServerConfig, ctx *proxy.Ctx, queryString string) string {
+	keywordParts := autojoinKeywordRegexp.FindStringSubmatch(queryString)
+	keywordAutoJoin := len(keywordParts) > 0
+	keywordAutoJoinVerbose := keywordAutoJoin && keywordParts[1] != ""
+	if keywordAutoJoin {
+		queryString = autojoinKeywordRegexp.ReplaceAllString(queryString, "")
 	} else if cfg.OnlyRespondToAutoJoins {
-		return defaultReturn
+		return queryString
+	}
+
+	parsedQuery, err := pg_query.Parse(queryString)
+	if err != nil {
+		slog.Debug("Could not parse query", slog.Any("error", err))
+		// The real server likely has a good error for this, and if we can't parse
+		// it it's unlikely that the server can.
+		return queryString
 	}
 
 	databaseInfo, err := getDatabaseInfo(ctx.Context, buildDbUrl(ctx), cfg.MaxCacheTTL)
 	if err != nil {
-		slog.Error("Could not get db info for query", errAttr(err))
-		return defaultReturn
+		slog.Error("Could not get db info for query", slog.Any("error", err))
+		if keywordAutoJoin {
+			return errorMessageAsSelect("Could not get db info for query, unable to autojoin")
+		} else {
+			return queryString
+		}
 	}
-	parsedQuery, err := pg_query.Parse(queryString)
+
+	joinPlan, err := AddMissingJoinsToQuery(parsedQuery, *databaseInfo, cfg.JoinBehavior)
 	if err != nil {
-		slog.Debug("Could not parse query", errAttr(err))
-		return defaultReturn
+		slog.Debug("Could not add missing joins to query", slog.Any("error", err))
+		if keywordAutoJoin {
+			return errorMessageAsSelect(fmt.Sprintf("Could not add missing joins to query: %v, unable to autojoin", err))
+		} else {
+			return queryString
+		}
 	}
-	columnToTableMap, err := AddMissingJoinsToQuery(parsedQuery, *databaseInfo, cfg.JoinBehavior)
-	if err != nil {
-		slog.Debug("Could not add missing joins to query", errAttr(err))
-		return defaultReturn
-	}
+
 	deparse, err := pg_query.Deparse(parsedQuery)
 	if err != nil {
-		slog.Debug("Could not deparse query after adding joins", errAttr(err))
-		return defaultReturn
+		slog.Debug("Could not deparse query after adding joins", slog.Any("error", err))
+		if keywordAutoJoin {
+			return errorMessageAsSelect(fmt.Sprintf("Could not deparse query after adding joins: %v, unable to autojoin", err))
+		} else {
+			return queryString
+		}
 	}
-	slog.Debug(fmt.Sprintf("Old query:\n\t%s \n", queryString))
-	slog.Debug(fmt.Sprintf("New query:\n\t%s \n", deparse))
+	slog.Debug(fmt.Sprintf("Old query:\n\t%s", queryString))
+	slog.Debug(fmt.Sprintf("New query:\n\t%s", deparse))
 
-	if onlyJoin {
-		return fmt.Sprintf("SELECT %s AS new_query;", pq.QuoteLiteral(deparse))
+	if keywordAutoJoin {
+		if keywordAutoJoinVerbose && len(joinPlan.MissingColumnsToPossibleTables) > 0 {
+			possibleRows := []string{
+				"(" + pq.QuoteLiteral(deparse) + ", '', '')",
+			}
+			for missingColumn, possibleTableNames := range joinPlan.MissingColumnsToPossibleTables {
+				possibleRows = append(possibleRows, fmt.Sprintf(
+					"('', %s, %s)",
+					pq.QuoteLiteral(missingColumn),
+					pq.QuoteLiteral(strings.Join(slices.Sorted(maps.Keys(possibleTableNames)), ","))),
+				)
+			}
+			return fmt.Sprintf("SELECT * FROM (VALUES %s) as t (new_query, missing_column, possible_tables)", strings.Join(possibleRows, ","))
+		} else {
+			return fmt.Sprintf("SELECT %s AS new_query", pq.QuoteLiteral(deparse))
+		}
 	} else {
 		ctx.ExtraData = map[string]interface{}{}
-		ctx.ExtraData["columnToTableMap"] = columnToTableMap
+		ctx.ExtraData["joinPlan"] = joinPlan
 		return deparse
 	}
 }
@@ -105,12 +152,15 @@ func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 	serverMessageHandlers := proxy.NewServerMessageHandlers()
 
 	serverMessageHandlers.AddHandleRowDescription(func(ctx *proxy.Ctx, msg *message.RowDescription) (*message.RowDescription, error) {
-		columnToTableMap, ok := ctx.ExtraData["columnToTableMap"].(map[string]string)
+		joinPlan, ok := ctx.ExtraData["joinPlan"].(MissingJoinResult)
 		if !ok || !cfg.ShouldPrefixFieldDescriptors {
 			return msg, nil
 		}
+		// It's fairly useful to prefix columns with the joined table, although
+		// what would be really nice is to coerce the joiner to go through specific
+		// routes to get what you want.
 		for i := range msg.Fields {
-			table, hasTable := columnToTableMap[msg.Fields[i].Name]
+			table, hasTable := joinPlan.MissingColumnsToJoinedTables[msg.Fields[i].Name]
 			if hasTable {
 				msg.Fields[i].Name = table + "_" + msg.Fields[i].Name
 			}
