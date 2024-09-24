@@ -120,5 +120,11 @@ func main() {
 	fmt.Println()
 	w.Flush()
 	fmt.Println()
-	fmt.Printf("Query returned %d rows\n", count)
+	var suffix string
+	if count == 1 {
+		suffix = "row"
+	} else {
+		suffix = "rows"
+	}
+	fmt.Printf("Query returned %d %s\n", count, suffix)
 }
