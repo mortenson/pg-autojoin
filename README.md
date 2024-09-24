@@ -57,7 +57,7 @@ The `pg-autojoin` command lets you run a single query and see it joined before
 finally executing it against a target (probably local) database. This is useful
 for trying out pg-autojoin.
 
-1. Run go install github.com/mortenson/pg-autojoin/cmd/pg-autojoin@latest
+1. Run `go install github.com/mortenson/pg-autojoin/cmd/pg-autojoin@latest`
 2. Set the `DATABASE_URL` env variable to a PostgreSQL connection string
 3. Run `pg-autojoin <your query>`
 
@@ -84,7 +84,7 @@ Query returned 1 row
 The `pg-autojoin-proxy` command lets you proxy your PostgreSQL server and
 add joins to all SELECTs that need them.
 
-1. Run go install github.com/mortenson/pg-autojoin/cmd/pg-autojoin-proxy@latest
+1. Run `go install github.com/mortenson/pg-autojoin/cmd/pg-autojoin-proxy@latest`
 2. Set the `DATABASE_URL` env variable to a PostgreSQL connection string
 3. Run `pg-autojoin-proxy --listen=<address to listen on> --proxy=<address to proxy>`
 

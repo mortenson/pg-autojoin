@@ -17,10 +17,10 @@ import (
 	"github.com/lib/pq"
 	"github.com/mortenson/pg-autojoin/internal/dbinfo"
 	"github.com/mortenson/pg-autojoin/internal/join"
+	"github.com/mortenson/pgbroker/backend"
+	"github.com/mortenson/pgbroker/message"
+	"github.com/mortenson/pgbroker/proxy"
 	pg_query "github.com/pganalyze/pg_query_go/v5"
-	"github.com/rueian/pgbroker/backend"
-	"github.com/rueian/pgbroker/message"
-	"github.com/rueian/pgbroker/proxy"
 )
 
 type ProxyServer struct {
