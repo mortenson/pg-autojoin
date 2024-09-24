@@ -69,6 +69,7 @@ The `pg-autojoin_proxy` command lets you proxy your PostgreSQL server and
 add joins to all SELECTs that need them.
 
 1. Run go install github.com/mortenson/pg-autojoin/cmd/pg-autojoin_proxy@latest
+2. Set the DATABASE_URL env variable to a PostgreSQL connection string
 3. Run `pg-autojoin_proxy --listen=<address to listen on> --proxy=<address to proxy>`
 
 Then in your client (ex: `psql`), connect to the proxy instead of the real

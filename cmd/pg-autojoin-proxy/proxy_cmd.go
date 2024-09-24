@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/mortenson/pg-autojoin/internal/join"
 	"github.com/mortenson/pg-autojoin/internal/proxy"
 )
@@ -42,6 +43,17 @@ func main() {
 		joinBehavior = join.JoinBehaviorInnerJoin
 	}
 
+	dburl := os.Getenv("DATABASE_URL")
+	if dburl == "" {
+		slog.Error("DATABASE_URL env variable is required")
+		os.Exit(1)
+	}
+	parsedConfigFromDbUrl, err := pgx.ParseConfig(dburl)
+	if err != nil || parsedConfigFromDbUrl.Database == "" {
+		slog.Error("Could not parse DATABASE_URL to determine what database you want to proxy")
+		os.Exit(1)
+	}
+
 	var tlsConfig *tls.Config
 	certFile := os.Getenv("PG_AUTOJOIN_CERTFILE")
 	keyFile := os.Getenv("PG_AUTOJOIN_KEYFILE")
@@ -62,6 +74,8 @@ func main() {
 	}
 
 	server := proxy.NewProxyServer(proxy.ProxyServerConfig{
+		DatabaseName:                 parsedConfigFromDbUrl.Database,
+		DatabaseUrl:                  dburl,
 		OnlyRespondToAutoJoins:       *onlyJoinGlobalPtr,
 		ShouldPrefixFieldDescriptors: *prefix,
 		ProxyAddress:                 *proxyPointer,

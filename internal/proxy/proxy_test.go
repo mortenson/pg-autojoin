@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,22 +16,25 @@ func TestProxy(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:5337")
 	require.NoError(t, err)
 
+	// @todo use temp database since I can't use transactions
+	originalDbUrl := os.Getenv("PG_AUTOJOIN_TEST_DATABASE_URL")
+	if originalDbUrl == "" {
+		originalDbUrl = "postgres://localhost:5432/pg-autojoin-test-db"
+	}
+	parsed, _ := pgx.ParseConfig(originalDbUrl)
+	dburl := strings.Replace(originalDbUrl, net.JoinHostPort(parsed.Host, strconv.Itoa(int(parsed.Port))), "localhost:5337", 1)
+
 	server := NewProxyServer(ProxyServerConfig{
+		DatabaseName: parsed.Database,
+		DatabaseUrl:  originalDbUrl,
 		ProxyAddress: "localhost:5432",
 	})
 
 	go server.Serve(ln) //nolint:all
 	defer server.Shutdown()
 
-	// @todo use temp database since I can't use transactions
-	envUrl := os.Getenv("PG_AUTOJOIN_TEST_DATABASE_URL")
-	if envUrl == "" {
-		envUrl = "postgres://localhost:5432/pg-autojoin-test-db"
-	}
-	envUrl = strings.Replace(envUrl, "localhost:5432", "localhost:5337", 1)
-
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, envUrl)
+	conn, err := pgx.Connect(ctx, dburl)
 	if err != nil {
 		require.NoError(t, err)
 	}

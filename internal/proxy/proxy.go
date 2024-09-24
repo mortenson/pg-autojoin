@@ -28,6 +28,8 @@ type ProxyServer struct {
 }
 
 type ProxyServerConfig struct {
+	DatabaseName                 string
+	DatabaseUrl                  string
 	OnlyRespondToAutoJoins       bool
 	ShouldPrefixFieldDescriptors bool
 	ProxyAddress                 string
@@ -63,6 +65,10 @@ func errorMessageAsSelect(msg string) string {
 // The function is fairly messy because of the AUTOJOIN behavior, but it's nice
 // to have so that users don't have to go to the server.
 func handleQueryStringMessage(cfg ProxyServerConfig, ctx *proxy.Ctx, queryString string) string {
+	if ctx.ConnInfo.StartupParameters["database"] != cfg.DatabaseName {
+		return queryString
+	}
+
 	keywordParts := autojoinKeywordRegexp.FindStringSubmatch(queryString)
 	keywordAutoJoin := len(keywordParts) > 0
 	keywordAutoJoinVerbose := keywordAutoJoin && keywordParts[1] != ""
@@ -80,7 +86,7 @@ func handleQueryStringMessage(cfg ProxyServerConfig, ctx *proxy.Ctx, queryString
 		return queryString
 	}
 
-	databaseInfo, err := getDatabaseInfo(ctx.Context, buildDbUrl(ctx), cfg.MaxCacheTTL)
+	databaseInfo, err := getDatabaseInfo(ctx.Context, cfg.DatabaseUrl, cfg.MaxCacheTTL)
 	if err != nil {
 		slog.Error("Could not get db info for query", slog.Any("error", err))
 		if keywordAutoJoin {
@@ -151,11 +157,6 @@ func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 		return msg, nil
 	})
 
-	clientMessageHandlers.AddHandlePasswordMessage(func(ctx *proxy.Ctx, msg *message.PasswordMessage) (*message.PasswordMessage, error) {
-		ctx.ExtraData["password"] = msg.Password
-		return msg, nil
-	})
-
 	serverMessageHandlers := proxy.NewServerMessageHandlers()
 
 	serverMessageHandlers.AddHandleRowDescription(func(ctx *proxy.Ctx, msg *message.RowDescription) (*message.RowDescription, error) {
@@ -193,8 +194,13 @@ type DatabaseInfoCache struct {
 	CreatedAt    time.Time
 }
 
-// Possibly stupid way to lock individual keys in a map.
+// Map of database urls to DatabaseInfoCache.
+// While the proxy only works for a single database url now, hypothetically it
+// should be possible to hijack any client connection to any database to get
+// schema info. We don't do this right now because it's hard.
 var databaseInfoCache = map[string]*DatabaseInfoCache{}
+
+// Possibly stupid way to lock individual keys in a map.
 var infoCacheLocks = sync.Map{}
 
 func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duration) (*dbinfo.DatabaseInfo, error) {
@@ -213,7 +219,6 @@ func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duratio
 	lock.Lock()
 	defer lock.Unlock()
 
-	// @todo It'd be nice to re-use existing connection we have via the proxy but seems not possible with pgx?
 	conn, err := pgx.Connect(ctx, dburl)
 	if err != nil {
 		return nil, err
@@ -230,24 +235,4 @@ func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duratio
 		CreatedAt:    time.Now(),
 	}
 	return databaseInfoCache[dburl].DatabaseInfo, nil
-}
-
-// Construct a connection string based on connection parameters.
-func buildDbUrl(ctx *proxy.Ctx) string {
-	dburl := "postgres://"
-	user, hasUser := ctx.ConnInfo.StartupParameters["user"]
-	database, hasDatabase := ctx.ConnInfo.StartupParameters["database"]
-	password, hasPassword := ctx.ExtraData["password"].(string)
-	if hasUser {
-		dburl += user
-		if hasPassword {
-			dburl += ":" + password
-		}
-		dburl += "@"
-	}
-	dburl += ctx.ConnInfo.ServerAddress.String()
-	if hasDatabase {
-		dburl += "/" + database
-	}
-	return dburl
 }
