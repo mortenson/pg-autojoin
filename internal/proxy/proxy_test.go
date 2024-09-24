@@ -12,7 +12,7 @@ import (
 )
 
 func TestProxy(t *testing.T) {
-	ln, err := net.Listen("tcp", "localhost:0")
+	ln, err := net.Listen("tcp", "localhost:5337")
 	require.NoError(t, err)
 
 	server := NewProxyServer(ProxyServerConfig{
@@ -27,7 +27,7 @@ func TestProxy(t *testing.T) {
 	if envUrl == "" {
 		envUrl = "postgres://localhost:5432/pg-autojoin-test-db"
 	}
-	envUrl = strings.Replace(envUrl, "localhost:5432", ln.Addr().String(), 1)
+	envUrl = strings.Replace(envUrl, "localhost:5432", "localhost:5337", 1)
 
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, envUrl)
