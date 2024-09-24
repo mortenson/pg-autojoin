@@ -21,7 +21,8 @@ func TestProxy(t *testing.T) {
 	if originalDbUrl == "" {
 		originalDbUrl = "postgres://localhost:5432/pg-autojoin-test-db"
 	}
-	parsed, _ := pgx.ParseConfig(originalDbUrl)
+	parsed, err := pgx.ParseConfig(originalDbUrl)
+	require.NoError(t, err)
 	dburl := strings.Replace(originalDbUrl, net.JoinHostPort(parsed.Host, strconv.Itoa(int(parsed.Port))), "localhost:5337", 1)
 
 	server := NewProxyServer(ProxyServerConfig{
