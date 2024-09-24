@@ -32,6 +32,6 @@ jobs:
         with:
           go-version: stable
       - name: Run tests
-        run: go test .
+        run: go test ./...
         env:
-          PG_AUTOJOIN_TEST_DATABASE_URL: postgres://autojoin:autojoin@localhost/pg-autojoin-test-db
+          PG_AUTOJOIN_TEST_DATABASE_URL: postgres://autojoin:autojoin@localhost:5432/pg-autojoin-test-db

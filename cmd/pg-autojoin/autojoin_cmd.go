@@ -10,7 +10,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/mortenson/pg_autojoin"
+	"github.com/mortenson/pg-autojoin/internal/dbinfo"
+	"github.com/mortenson/pg-autojoin/internal/join"
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
@@ -30,11 +31,11 @@ func main() {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
 
-	var joinBehavior pg_autojoin.JoinBehavior
+	var joinBehavior join.JoinBehavior
 	if *joinTypePtr == "left" {
-		joinBehavior = pg_autojoin.JoinBehaviorLeftJoin
+		joinBehavior = join.JoinBehaviorLeftJoin
 	} else {
-		joinBehavior = pg_autojoin.JoinBehaviorInnerJoin
+		joinBehavior = join.JoinBehaviorInnerJoin
 	}
 
 	args := flag.Args()
@@ -61,7 +62,7 @@ func main() {
 	defer conn.Close(ctx)
 
 	// Gather information on what columns, tables, and fkeys exists.
-	databaseInfo, err := pg_autojoin.GetDatabaseInfoResult(ctx, conn)
+	databaseInfo, err := dbinfo.GetDatabaseInfoResult(ctx, conn)
 	if err != nil {
 		slog.Error("Could not gather table info", slog.Any("error", err))
 		os.Exit(1)
@@ -72,7 +73,7 @@ func main() {
 		slog.Error("Could not parse query", slog.Any("error", err))
 		os.Exit(1)
 	}
-	_, err = pg_autojoin.AddMissingJoinsToQuery(parsedQuery, databaseInfo, joinBehavior)
+	_, err = join.AddMissingJoinsToQuery(parsedQuery, databaseInfo, joinBehavior)
 	if err != nil {
 		slog.Error("Could not add missing joins to query", slog.Any("error", err))
 		os.Exit(1)

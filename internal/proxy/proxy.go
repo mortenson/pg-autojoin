@@ -1,4 +1,4 @@
-package pg_autojoin
+package proxy
 
 import (
 	"context"
@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lib/pq"
+	"github.com/mortenson/pg-autojoin/internal/dbinfo"
+	"github.com/mortenson/pg-autojoin/internal/join"
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 	"github.com/rueian/pgbroker/backend"
 	"github.com/rueian/pgbroker/message"
@@ -30,7 +32,7 @@ type ProxyServerConfig struct {
 	ShouldPrefixFieldDescriptors bool
 	ProxyAddress                 string
 	MaxCacheTTL                  time.Duration
-	JoinBehavior                 JoinBehavior
+	JoinBehavior                 join.JoinBehavior
 	TLSConfig                    *tls.Config
 }
 
@@ -88,7 +90,7 @@ func handleQueryStringMessage(cfg ProxyServerConfig, ctx *proxy.Ctx, queryString
 		}
 	}
 
-	joinPlan, err := AddMissingJoinsToQuery(parsedQuery, *databaseInfo, cfg.JoinBehavior)
+	joinPlan, err := join.AddMissingJoinsToQuery(parsedQuery, *databaseInfo, cfg.JoinBehavior)
 	if err != nil {
 		slog.Debug("Could not add missing joins to query", slog.Any("error", err))
 		if keywordAutoJoin {
@@ -152,7 +154,7 @@ func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 	serverMessageHandlers := proxy.NewServerMessageHandlers()
 
 	serverMessageHandlers.AddHandleRowDescription(func(ctx *proxy.Ctx, msg *message.RowDescription) (*message.RowDescription, error) {
-		joinPlan, ok := ctx.ExtraData["joinPlan"].(MissingJoinResult)
+		joinPlan, ok := ctx.ExtraData["joinPlan"].(join.MissingJoinResult)
 		if !ok || !cfg.ShouldPrefixFieldDescriptors {
 			return msg, nil
 		}
@@ -182,7 +184,7 @@ func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 }
 
 type DatabaseInfoCache struct {
-	DatabaseInfo *DatabaseInfo
+	DatabaseInfo *dbinfo.DatabaseInfo
 	CreatedAt    time.Time
 }
 
@@ -190,7 +192,7 @@ type DatabaseInfoCache struct {
 var databaseInfoCache = map[string]*DatabaseInfoCache{}
 var infoCacheLocks = sync.Map{}
 
-func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duration) (*DatabaseInfo, error) {
+func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duration) (*dbinfo.DatabaseInfo, error) {
 	storedLock, _ := infoCacheLocks.LoadOrStore(dburl, &sync.RWMutex{})
 	lock := storedLock.(*sync.RWMutex)
 
@@ -214,7 +216,7 @@ func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duratio
 	defer conn.Close(ctx)
 
 	// Gather information on what columns, tables, and fkeys exists.
-	databaseInfo, err := GetDatabaseInfoResult(ctx, conn)
+	databaseInfo, err := dbinfo.GetDatabaseInfoResult(ctx, conn)
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-module github.com/mortenson/pg_autojoin
+module github.com/mortenson/pg-autojoin
 
 go 1.23.0
 

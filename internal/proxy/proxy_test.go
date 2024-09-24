@@ -1,9 +1,10 @@
-package pg_autojoin
+package proxy
 
 import (
 	"context"
 	"net"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -11,11 +12,11 @@ import (
 )
 
 func TestProxy(t *testing.T) {
-	ln, err := net.Listen("tcp", ":0")
+	ln, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
 
 	server := NewProxyServer(ProxyServerConfig{
-		ProxyAddress: ":5432",
+		ProxyAddress: "localhost:5432",
 	})
 
 	go server.Serve(ln) //nolint:all
@@ -24,8 +25,10 @@ func TestProxy(t *testing.T) {
 	// @todo use temp database since I can't use transactions
 	envUrl := os.Getenv("PG_AUTOJOIN_TEST_DATABASE_URL")
 	if envUrl == "" {
-		envUrl = "postgres://" + ln.Addr().String() + "/pg-autojoin-test-db"
+		envUrl = "postgres://localhost:5432/pg-autojoin-test-db"
 	}
+	envUrl = strings.Replace(envUrl, "localhost:5432", ln.Addr().String(), 1)
+
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, envUrl)
 	if err != nil {

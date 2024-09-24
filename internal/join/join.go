@@ -1,4 +1,4 @@
-package pg_autojoin
+package join
 
 import (
 	"fmt"
@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/dominikbraun/graph"
+	"github.com/mortenson/pg-autojoin/internal/dbinfo"
+	"github.com/mortenson/pg-autojoin/internal/parse"
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 )
 
@@ -24,14 +26,31 @@ type MissingJoinResult struct {
 	MissingColumnsToPossibleTables map[string]map[string]string
 }
 
-func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo, joinBehavior JoinBehavior) (MissingJoinResult, error) {
+// Attempts to add JOINs to queries that reference columns from other tables.
+func AddMissingJoinsToQuery(parsedQuery *pg_query.ParseResult, databaseInfo dbinfo.DatabaseInfo, joinBehavior JoinBehavior) (MissingJoinResult, error) {
+	var joinPlan MissingJoinResult
+	for _, stmt := range parsedQuery.GetStmts() {
+		// We can only safely do this on SELECTs.
+		if stmt.Stmt.GetSelectStmt() == nil {
+			continue
+		}
+		tableMap, err := addMissingJoinsToSelect(stmt, databaseInfo, joinBehavior)
+		if err != nil {
+			return joinPlan, err
+		}
+		joinPlan = tableMap
+	}
+	return joinPlan, nil
+}
+
+func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo dbinfo.DatabaseInfo, joinBehavior JoinBehavior) (MissingJoinResult, error) {
 	joinPlan := MissingJoinResult{
 		MissingColumnsToJoinedTables:   map[string]string{},
 		MissingColumnsToPossibleTables: map[string]map[string]string{},
 	}
 
 	// Parse the query.
-	query := TraverseQuery(stmt, 0)
+	query := parse.TraverseQuery(stmt, 0)
 
 	// Set up some helpful maps for later.
 	queryTableNames := map[string]string{}
@@ -88,7 +107,7 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo, 
 		}
 
 		// For wildcards like foo.*, assume the user wants the "foo" table.
-		if column.Type == QueryColumnTypeTableWildcard {
+		if column.Type == parse.QueryColumnTypeTableWildcard {
 			tablesThatHaveColumn = []string{*aliasTableName}
 		} else {
 			matches, ok := databaseInfo.ColumnToTable[column.Name]
@@ -99,7 +118,7 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo, 
 			slices.Sort(tablesThatHaveColumn)
 		}
 
-		if column.Type == QueryColumnTypeAliasedColumn && slices.Contains(tablesThatHaveColumn, *aliasTableName) {
+		if column.Type == parse.QueryColumnTypeAliasedColumn && slices.Contains(tablesThatHaveColumn, *aliasTableName) {
 			slog.Debug(fmt.Sprintf("Using alias to imply join for %s", column))
 			tablesThatHaveColumn = []string{*aliasTableName}
 		}
@@ -173,7 +192,7 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo, 
 			// See what direction we need to join.
 			// @todo this could probably be stored in the graph, then allPaths would be vertexes not names.
 			var fromTable string
-			var matchingFkey *ForeignKey
+			var matchingFkey *dbinfo.ForeignKey
 			for _, fkey := range databaseInfo.Tables[lastTable].ForeignKeys {
 				if fkey.ToTable == tableName {
 					matchingFkey = fkey
@@ -221,22 +240,5 @@ func addMissingJoinsToSelect(stmt *pg_query.RawStmt, databaseInfo DatabaseInfo, 
 		}
 	}
 
-	return joinPlan, nil
-}
-
-// Attempts to add JOINs to queries that reference columns from other tables.
-func AddMissingJoinsToQuery(parsedQuery *pg_query.ParseResult, databaseInfo DatabaseInfo, joinBehavior JoinBehavior) (MissingJoinResult, error) {
-	var joinPlan MissingJoinResult
-	for _, stmt := range parsedQuery.GetStmts() {
-		// We can only safely do this on SELECTs.
-		if stmt.Stmt.GetSelectStmt() == nil {
-			continue
-		}
-		tableMap, err := addMissingJoinsToSelect(stmt, databaseInfo, joinBehavior)
-		if err != nil {
-			return joinPlan, err
-		}
-		joinPlan = tableMap
-	}
 	return joinPlan, nil
 }

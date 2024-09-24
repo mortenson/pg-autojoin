@@ -11,7 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mortenson/pg_autojoin"
+	"github.com/mortenson/pg-autojoin/internal/join"
+	"github.com/mortenson/pg-autojoin/internal/proxy"
 )
 
 func main() {
@@ -34,11 +35,11 @@ func main() {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
 
-	var joinBehavior pg_autojoin.JoinBehavior
+	var joinBehavior join.JoinBehavior
 	if *joinTypePtr == "left" {
-		joinBehavior = pg_autojoin.JoinBehaviorLeftJoin
+		joinBehavior = join.JoinBehaviorLeftJoin
 	} else {
-		joinBehavior = pg_autojoin.JoinBehaviorInnerJoin
+		joinBehavior = join.JoinBehaviorInnerJoin
 	}
 
 	var tlsConfig *tls.Config
@@ -60,7 +61,7 @@ func main() {
 		panic(err)
 	}
 
-	server := pg_autojoin.NewProxyServer(pg_autojoin.ProxyServerConfig{
+	server := proxy.NewProxyServer(proxy.ProxyServerConfig{
 		OnlyRespondToAutoJoins:       *onlyJoinGlobalPtr,
 		ShouldPrefixFieldDescriptors: *prefix,
 		ProxyAddress:                 *proxyPointer,
