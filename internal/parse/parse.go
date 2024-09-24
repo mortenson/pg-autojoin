@@ -1,4 +1,4 @@
-package pg_autojoin
+package parse
 
 import (
 	"log/slog"

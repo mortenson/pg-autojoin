@@ -11,7 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mortenson/pg_autojoin"
+	"github.com/jackc/pgx/v5"
+	"github.com/mortenson/pg-autojoin/internal/join"
+	"github.com/mortenson/pg-autojoin/internal/proxy"
 )
 
 func main() {
@@ -34,11 +36,22 @@ func main() {
 		slog.SetLogLoggerLevel(slog.LevelDebug)
 	}
 
-	var joinBehavior pg_autojoin.JoinBehavior
+	var joinBehavior join.JoinBehavior
 	if *joinTypePtr == "left" {
-		joinBehavior = pg_autojoin.JoinBehaviorLeftJoin
+		joinBehavior = join.JoinBehaviorLeftJoin
 	} else {
-		joinBehavior = pg_autojoin.JoinBehaviorInnerJoin
+		joinBehavior = join.JoinBehaviorInnerJoin
+	}
+
+	dburl := os.Getenv("DATABASE_URL")
+	if dburl == "" {
+		slog.Error("DATABASE_URL env variable is required")
+		os.Exit(1)
+	}
+	parsedConfigFromDbUrl, err := pgx.ParseConfig(dburl)
+	if err != nil || parsedConfigFromDbUrl.Database == "" {
+		slog.Error("Could not parse DATABASE_URL to determine what database you want to proxy")
+		os.Exit(1)
 	}
 
 	var tlsConfig *tls.Config
@@ -60,7 +73,9 @@ func main() {
 		panic(err)
 	}
 
-	server := pg_autojoin.NewProxyServer(pg_autojoin.ProxyServerConfig{
+	server := proxy.NewProxyServer(proxy.ProxyServerConfig{
+		DatabaseName:                 parsedConfigFromDbUrl.Database,
+		DatabaseUrl:                  dburl,
 		OnlyRespondToAutoJoins:       *onlyJoinGlobalPtr,
 		ShouldPrefixFieldDescriptors: *prefix,
 		ProxyAddress:                 *proxyPointer,

@@ -1,4 +1,4 @@
-package pg_autojoin
+package join
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/mortenson/pg-autojoin/internal/dbinfo"
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 	"github.com/stretchr/testify/require"
 )
@@ -27,7 +28,7 @@ func runTestData(t *testing.T, ctx context.Context, tx pgx.Tx, testDir string) {
 
 	_, err = tx.Exec(ctx, string(schemaFile))
 	require.NoError(t, err)
-	databaseInfo, err := GetDatabaseInfoResult(ctx, tx)
+	databaseInfo, err := dbinfo.GetDatabaseInfoResult(ctx, tx)
 	require.NoError(t, err)
 	parsedQuery, err := pg_query.Parse(string(queryBefore))
 	require.NoError(t, err)
@@ -52,7 +53,7 @@ func TestAutojoin(t *testing.T) {
 	defer conn.Close(ctx)
 
 	_, filename, _, _ := runtime.Caller(0)
-	dir := path.Join(path.Dir(filename), "testdata")
+	dir := path.Join(path.Dir(filename), "../../testdata")
 	dirEntry, err := os.ReadDir(dir)
 	require.NoError(t, err)
 

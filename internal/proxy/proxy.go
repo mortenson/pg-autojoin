@@ -1,4 +1,4 @@
-package pg_autojoin
+package proxy
 
 import (
 	"context"
@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/lib/pq"
+	"github.com/mortenson/pg-autojoin/internal/dbinfo"
+	"github.com/mortenson/pg-autojoin/internal/join"
 	pg_query "github.com/pganalyze/pg_query_go/v5"
 	"github.com/rueian/pgbroker/backend"
 	"github.com/rueian/pgbroker/message"
@@ -26,11 +28,13 @@ type ProxyServer struct {
 }
 
 type ProxyServerConfig struct {
+	DatabaseName                 string
+	DatabaseUrl                  string
 	OnlyRespondToAutoJoins       bool
 	ShouldPrefixFieldDescriptors bool
 	ProxyAddress                 string
 	MaxCacheTTL                  time.Duration
-	JoinBehavior                 JoinBehavior
+	JoinBehavior                 join.JoinBehavior
 	TLSConfig                    *tls.Config
 }
 
@@ -61,6 +65,10 @@ func errorMessageAsSelect(msg string) string {
 // The function is fairly messy because of the AUTOJOIN behavior, but it's nice
 // to have so that users don't have to go to the server.
 func handleQueryStringMessage(cfg ProxyServerConfig, ctx *proxy.Ctx, queryString string) string {
+	if ctx.ConnInfo.StartupParameters["database"] != cfg.DatabaseName {
+		return queryString
+	}
+
 	keywordParts := autojoinKeywordRegexp.FindStringSubmatch(queryString)
 	keywordAutoJoin := len(keywordParts) > 0
 	keywordAutoJoinVerbose := keywordAutoJoin && keywordParts[1] != ""
@@ -78,7 +86,7 @@ func handleQueryStringMessage(cfg ProxyServerConfig, ctx *proxy.Ctx, queryString
 		return queryString
 	}
 
-	databaseInfo, err := getDatabaseInfo(ctx.Context, buildDbUrl(ctx), cfg.MaxCacheTTL)
+	databaseInfo, err := getDatabaseInfo(ctx.Context, cfg.DatabaseUrl, cfg.MaxCacheTTL)
 	if err != nil {
 		slog.Error("Could not get db info for query", slog.Any("error", err))
 		if keywordAutoJoin {
@@ -88,7 +96,7 @@ func handleQueryStringMessage(cfg ProxyServerConfig, ctx *proxy.Ctx, queryString
 		}
 	}
 
-	joinPlan, err := AddMissingJoinsToQuery(parsedQuery, *databaseInfo, cfg.JoinBehavior)
+	joinPlan, err := join.AddMissingJoinsToQuery(parsedQuery, *databaseInfo, cfg.JoinBehavior)
 	if err != nil {
 		slog.Debug("Could not add missing joins to query", slog.Any("error", err))
 		if keywordAutoJoin {
@@ -152,7 +160,7 @@ func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 	serverMessageHandlers := proxy.NewServerMessageHandlers()
 
 	serverMessageHandlers.AddHandleRowDescription(func(ctx *proxy.Ctx, msg *message.RowDescription) (*message.RowDescription, error) {
-		joinPlan, ok := ctx.ExtraData["joinPlan"].(MissingJoinResult)
+		joinPlan, ok := ctx.ExtraData["joinPlan"].(join.MissingJoinResult)
 		if !ok || !cfg.ShouldPrefixFieldDescriptors {
 			return msg, nil
 		}
@@ -182,15 +190,20 @@ func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 }
 
 type DatabaseInfoCache struct {
-	DatabaseInfo *DatabaseInfo
+	DatabaseInfo *dbinfo.DatabaseInfo
 	CreatedAt    time.Time
 }
 
-// Possibly stupid way to lock individual keys in a map.
+// Map of database urls to DatabaseInfoCache.
+// While the proxy only works for a single database url now, hypothetically it
+// should be possible to hijack any client connection to any database to get
+// schema info. We don't do this right now because it's hard.
 var databaseInfoCache = map[string]*DatabaseInfoCache{}
+
+// Possibly stupid way to lock individual keys in a map.
 var infoCacheLocks = sync.Map{}
 
-func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duration) (*DatabaseInfo, error) {
+func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duration) (*dbinfo.DatabaseInfo, error) {
 	storedLock, _ := infoCacheLocks.LoadOrStore(dburl, &sync.RWMutex{})
 	lock := storedLock.(*sync.RWMutex)
 
@@ -206,7 +219,6 @@ func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duratio
 	lock.Lock()
 	defer lock.Unlock()
 
-	// @todo It'd be nice to re-use existing connection we have via the proxy but seems not possible with pgx?
 	conn, err := pgx.Connect(ctx, dburl)
 	if err != nil {
 		return nil, err
@@ -214,7 +226,7 @@ func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duratio
 	defer conn.Close(ctx)
 
 	// Gather information on what columns, tables, and fkeys exists.
-	databaseInfo, err := GetDatabaseInfoResult(ctx, conn)
+	databaseInfo, err := dbinfo.GetDatabaseInfoResult(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -223,24 +235,4 @@ func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duratio
 		CreatedAt:    time.Now(),
 	}
 	return databaseInfoCache[dburl].DatabaseInfo, nil
-}
-
-// Construct a connection string based on connection parameters.
-func buildDbUrl(ctx *proxy.Ctx) string {
-	dburl := "postgres://"
-	user, hasUser := ctx.ConnInfo.StartupParameters["user"]
-	password, hasPassword := ctx.ConnInfo.StartupParameters["password"]
-	database, hasDatabase := ctx.ConnInfo.StartupParameters["database"]
-	if hasUser {
-		dburl += user
-		if hasPassword {
-			dburl += ":" + password
-		}
-		dburl += "@"
-	}
-	dburl += ctx.ConnInfo.ServerAddress.String()
-	if hasDatabase {
-		dburl += "/" + database
-	}
-	return dburl
 }
