@@ -151,6 +151,11 @@ func NewProxyServer(cfg ProxyServerConfig) *ProxyServer {
 		return msg, nil
 	})
 
+	clientMessageHandlers.AddHandlePasswordMessage(func(ctx *proxy.Ctx, msg *message.PasswordMessage) (*message.PasswordMessage, error) {
+		ctx.ExtraData["password"] = msg.Password
+		return msg, nil
+	})
+
 	serverMessageHandlers := proxy.NewServerMessageHandlers()
 
 	serverMessageHandlers.AddHandleRowDescription(func(ctx *proxy.Ctx, msg *message.RowDescription) (*message.RowDescription, error) {
@@ -231,8 +236,8 @@ func getDatabaseInfo(ctx context.Context, dburl string, maxCacheTTL time.Duratio
 func buildDbUrl(ctx *proxy.Ctx) string {
 	dburl := "postgres://"
 	user, hasUser := ctx.ConnInfo.StartupParameters["user"]
-	password, hasPassword := ctx.ConnInfo.StartupParameters["password"]
 	database, hasDatabase := ctx.ConnInfo.StartupParameters["database"]
+	password, hasPassword := ctx.ExtraData["password"].(string)
 	if hasUser {
 		dburl += user
 		if hasPassword {
